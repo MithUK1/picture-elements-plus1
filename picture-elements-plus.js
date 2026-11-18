@@ -1,38 +1,53 @@
 /*
  * Picture Elements Plus
  *
- * A thin wrapper around Home Assistant's own picture-elements card. The card
- * itself renders exactly like the built-in one (it *is* the built-in one,
- * inside), so any existing picture-elements YAML works after changing the
- * type to `custom:picture-elements-plus`.
+ * Home Assistant's picture-elements card with a nicer editor. The card on
+ * the dashboard *is* the built-in card, wrapped, so existing YAML keeps
+ * working after changing the type to `custom:picture-elements-plus`.
  *
- * What it adds, all in the card editor:
- *   - a searchable entity picker with icons, room filter and sensible
- *     defaults per domain, instead of the plain "Add new element" dropdown
- *   - snapping when you drag elements in the preview (to a grid, and to line
- *     up with other elements), with guide lines and a position readout
+ * On top of the built-in card it adds:
+ *   - a plan size, so the plan can be shown bigger or smaller than the card
+ *     while icons stay the same size
+ *   - an icon colour and an "on" colour for every icon on the plan
+ *   - visibility conditions on any element
+ *   - a text element you can drag around (it also renders templates)
+ *
+ * And in the editor:
+ *   - a searchable entity picker in place of the "Add new element" dropdown
+ *   - snapping and guide lines when dragging elements in the preview
  *   - arrow keys to nudge the selected element
  *
- * Dragging itself is done by Home Assistant (2026.11 and later). HA hands the
- * preview card a small "bridge" object hidden on the config under a Symbol;
- * we pass it straight through and hook into it for the snapping.
+ * Dragging itself comes from Home Assistant (2026.11 and later). HA hands the
+ * preview card a "bridge" object hidden on the config under a Symbol; we pass
+ * it straight through and hook into it for snapping and nudging.
+ *
+ * The file is split into: shared helpers, the text element, the card, the
+ * card editor, and registration at the bottom.
  */
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 const CARD_TYPE = "picture-elements-plus";
+const TEXT_TYPE = "picture-elements-plus-text";
+
 const BRIDGE_DESCRIPTION = "pictureElementsEditorBridge";
 const SNAP_STORAGE_KEY = "picture-elements-plus:snap";
 
-// How close (in percent) an element has to get to another element's line
-// before it snaps onto it.
+// Card options we handle ourselves. They're taken off the config before it
+// reaches HA's card and editor, which reject keys they don't know.
+const OWN_OPTIONS = ["plan_size", "icon_color", "active_color"];
+
+// How close (in percent) a dragged element has to get to a line before it
+// snaps onto it.
 const ALIGN_DISTANCE = 0.8;
 
-// Number of search results to show before asking the user to type more.
+// The quarter and half-way lines drawn while dragging.
+const PLAN_GUIDES = [25, 50, 75];
+
 const MAX_RESULTS = 60;
 
-// Domains where tapping the icon should toggle the thing, which is what
-// you'd expect on a floor plan. Everything else opens more-info.
+// Tapping these on a floor plan should toggle them. Everything else opens
+// more-info.
 const TOGGLE_DOMAINS = new Set([
   "light",
   "switch",
@@ -44,6 +59,27 @@ const TOGGLE_DOMAINS = new Set([
 
 const BADGE_DOMAINS = new Set(["person", "device_tracker", "zone"]);
 
+const HELPER_DOMAINS = new Set([
+  "input_boolean",
+  "input_number",
+  "input_select",
+  "input_text",
+  "input_datetime",
+  "input_button",
+  "counter",
+  "timer",
+  "schedule",
+]);
+
+// Theme colour names that HA's colour picker hands back, which map onto
+// theme variables rather than plain CSS colours.
+const THEME_COLORS = new Set([
+  "primary", "accent", "disabled", "red", "pink", "purple", "deep-purple",
+  "indigo", "blue", "light-blue", "cyan", "teal", "green", "light-green",
+  "lime", "yellow", "amber", "orange", "deep-orange", "brown", "light-grey",
+  "grey", "dark-grey", "blue-grey", "black", "white",
+]);
+
 const ELEMENT_TYPES = [
   { type: "auto", label: "Auto", icon: "mdi:auto-fix" },
   { type: "state-icon", label: "State icon", icon: "mdi:lightbulb-outline" },
@@ -52,6 +88,7 @@ const ELEMENT_TYPES = [
 ];
 
 const OTHER_ELEMENTS = [
+  { type: "text", label: "Text", icon: "mdi:format-letter-case" },
   { type: "icon", label: "Icon", icon: "mdi:emoticon-outline" },
   { type: "image", label: "Image", icon: "mdi:image-outline" },
   { type: "action-button", label: "Action button", icon: "mdi:gesture-tap-button" },
@@ -59,6 +96,7 @@ const OTHER_ELEMENTS = [
 ];
 
 const DOMAIN_ICONS = {
+  helpers: "mdi:tools",
   light: "mdi:lightbulb",
   switch: "mdi:toggle-switch",
   sensor: "mdi:eye",
@@ -76,12 +114,28 @@ const DOMAIN_ICONS = {
   script: "mdi:script-text",
 };
 
+// Shown until a real floor plan is chosen. A plain outline of a few rooms
+// with a hint in the middle, small enough to live in the config.
+const PLACEHOLDER_IMAGE =
+  "data:image/svg+xml," +
+  encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 500">` +
+      `<rect width="800" height="500" fill="#f4f4f4"/>` +
+      `<g fill="none" stroke="#9e9e9e" stroke-width="6">` +
+      `<rect x="40" y="40" width="720" height="420"/>` +
+      `<path d="M330 40v170M330 290v170M40 250h200M560 40v260M560 300h200M330 250h80"/>` +
+      `</g>` +
+      `<text x="400" y="240" font-family="sans-serif" font-size="26" fill="#757575" text-anchor="middle">Choose your floor plan</text>` +
+      `<text x="400" y="276" font-family="sans-serif" font-size="18" fill="#9e9e9e" text-anchor="middle">Card options &gt; Image</text>` +
+      `</svg>`
+  );
+
 /* ------------------------------------------------------------------ */
-/* Helpers shared by the card and the editor                           */
+/* Shared helpers                                                      */
 /* ------------------------------------------------------------------ */
 
-// HA only loads its picture-elements card when something asks for it. Asking
-// the card helpers to build a throwaway one makes sure the class exists.
+// HA only loads its picture-elements card when something asks for it.
+// Getting the card helpers to build a throwaway one makes sure it exists.
 let cardClassPromise;
 function loadPictureElementsCard() {
   if (!cardClassPromise) {
@@ -90,7 +144,7 @@ function loadPictureElementsCard() {
         const helpers = await window.loadCardHelpers();
         helpers.createCardElement({
           type: "picture-elements",
-          image: "about:blank",
+          image: PLACEHOLDER_IMAGE,
           elements: [],
         });
         await customElements.whenDefined("hui-picture-elements-card");
@@ -101,8 +155,8 @@ function loadPictureElementsCard() {
   return cardClassPromise;
 }
 
-// The editor bridge is stored under a Symbol we can't import, so find it by
-// its description.
+// The editor bridge sits under a Symbol we can't import, so find it by its
+// description.
 function findBridge(config) {
   if (!config) return undefined;
   for (const key of Object.getOwnPropertySymbols(config)) {
@@ -115,7 +169,7 @@ function domainOf(entityId) {
   return entityId.split(".")[0];
 }
 
-// "42%" -> 42, anything else (px, calc, missing) -> undefined.
+// "42%" -> 42. Anything else (px, calc, missing) -> undefined.
 function parsePercent(value) {
   if (value === undefined || value === null) return undefined;
   const match = /^\s*(-?\d+(\.\d+)?)%\s*$/.exec(String(value));
@@ -132,12 +186,21 @@ function clamp(value) {
   return Math.min(100, Math.max(0, value));
 }
 
+function cssColor(color) {
+  if (!color) return undefined;
+  return THEME_COLORS.has(color) ? `var(--${color}-color)` : color;
+}
+
+function isPlaceholder(image) {
+  return !image || image === PLACEHOLDER_IMAGE;
+}
+
 function loadSnapSetting() {
   try {
     const stored = localStorage.getItem(SNAP_STORAGE_KEY);
     if (stored !== null) return parseFloat(stored) || 0;
   } catch (err) {
-    // Private mode or storage blocked, just use the default.
+    // Private mode or storage blocked, use the default.
   }
   return 1;
 }
@@ -150,43 +213,45 @@ function saveSnapSetting(value) {
   }
 }
 
-// Positions of every element we could line up with, except the one moving.
-function otherPositions(elements, skipIndex) {
-  const lefts = [];
-  const tops = [];
+// Where things can snap to on one axis: the other elements' lines, then the
+// quarter and half-way lines of the plan.
+function snapTargets(elements, skipIndex, axis) {
+  const lines = [];
   (elements || []).forEach((element, index) => {
     if (index === skipIndex || !element.style) return;
-    const left = parsePercent(element.style.left);
-    const top = parsePercent(element.style.top);
-    if (left !== undefined) lefts.push(left);
-    if (top !== undefined) tops.push(top);
+    const value = parsePercent(element.style[axis]);
+    if (value !== undefined) lines.push({ value, kind: "element" });
   });
-  return { lefts, tops };
+  for (const value of PLAN_GUIDES) lines.push({ value, kind: "guide" });
+  return lines;
 }
 
-function nearest(value, candidates) {
+function nearestLine(value, lines) {
   let best;
-  for (const candidate of candidates) {
-    const distance = Math.abs(candidate - value);
-    if (distance <= ALIGN_DISTANCE && (!best || distance < best.distance)) {
-      best = { value: candidate, distance };
-    }
+  for (const line of lines) {
+    const distance = Math.abs(line.value - value);
+    if (distance > ALIGN_DISTANCE) continue;
+    // Lining up with another element beats a plan guide at the same spot.
+    const better =
+      !best ||
+      distance < best.distance ||
+      (distance === best.distance && line.kind === "element");
+    if (better) best = { ...line, distance };
   }
-  return best ? best.value : undefined;
+  return best;
 }
 
-// Lining up with another element wins over the grid, since that's usually
-// what you're after on a floor plan (a column of icons along a wall).
+// Returns the snapped position, plus what each axis snapped to (if
+// anything) so the preview can colour the guide lines.
 function snapPosition(left, top, elements, index, step) {
-  const others = otherPositions(elements, index);
-  const alignedLeft = nearest(left, others.lefts);
-  const alignedTop = nearest(top, others.tops);
-  return {
-    left: alignedLeft ?? (step ? roundTo(left, step) : left),
-    top: alignedTop ?? (step ? roundTo(top, step) : top),
-    alignedLeft: alignedLeft !== undefined,
-    alignedTop: alignedTop !== undefined,
-  };
+  const result = { left, top, leftKind: undefined, topKind: undefined };
+  for (const axis of ["left", "top"]) {
+    const value = axis === "left" ? left : top;
+    const line = nearestLine(value, snapTargets(elements, index, axis));
+    result[axis] = line ? line.value : step ? roundTo(value, step) : value;
+    result[`${axis}Kind`] = line?.kind;
+  }
+  return result;
 }
 
 function fireEvent(node, type, detail) {
@@ -203,86 +268,223 @@ function escapeHtml(text) {
     .replace(/"/g, "&quot;");
 }
 
+function isTypingTarget(node) {
+  if (!(node instanceof HTMLElement)) return false;
+  if (node.isContentEditable) return true;
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName)) return true;
+  // Lists, menus and sliders use the arrow keys themselves.
+  const role = node.getAttribute("role");
+  return ["listbox", "option", "menu", "menuitem", "combobox", "slider", "textbox"].includes(role);
+}
+
+function prettyDomain(domain) {
+  const words = domain.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/* ------------------------------------------------------------------ */
+/* Text element                                                        */
+/* ------------------------------------------------------------------ */
+
+// A bit of text on the plan, like a room name. Used as an element:
+//
+//   - type: custom:picture-elements-plus-text
+//     text: Loft
+//     size: 3          # percent of the plan's width
+//     color: amber     # optional
+//     bold: true       # optional
+//     style: { left: 30%, top: 40% }
+//
+// Text containing {{ }} or {% %} is rendered as a template and kept up to
+// date, e.g. text: "{{ states('sensor.loft_temperature') }}°C".
+class PictureElementsPlusText extends HTMLElement {
+  static getStubConfig() {
+    return { type: `custom:${TEXT_TYPE}`, text: "Room name", size: 3 };
+  }
+
+  static getConfigElement() {
+    return document.createElement(`${TEXT_TYPE}-editor`);
+  }
+
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { white-space: nowrap; cursor: default; }
+        span { line-height: 1.2; }
+      </style>
+      <span></span>
+    `;
+    this._span = this.shadowRoot.querySelector("span");
+  }
+
+  setConfig(config) {
+    if (config.text === undefined || config.text === null) {
+      throw new Error("Text required");
+    }
+    const templateChanged = config.text !== this._config?.text;
+    this._config = config;
+    if (templateChanged) this._unsubscribe();
+    this._render();
+    this._subscribe();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._subscribe();
+  }
+
+  connectedCallback() {
+    this._subscribe();
+  }
+
+  disconnectedCallback() {
+    this._unsubscribe();
+  }
+
+  get _isTemplate() {
+    return /\{\{|\{%/.test(String(this._config?.text ?? ""));
+  }
+
+  _render() {
+    const config = this._config;
+    const size = Number(config.size) || 3;
+    // --pep-unit is 1% of the plan's width, set by the card.
+    this._span.style.fontSize = `calc(var(--pep-unit, 6px) * ${size})`;
+    this._span.style.color = cssColor(config.color) || "var(--primary-text-color)";
+    this._span.style.fontWeight = config.bold ? "700" : "400";
+    if (!this._isTemplate) {
+      this._span.textContent = config.text;
+    } else if (this._rendered === undefined) {
+      this._span.textContent = "";
+    } else {
+      this._span.textContent = this._rendered;
+    }
+  }
+
+  _subscribe() {
+    if (!this._isTemplate || this._unsubscribePromise || !this._hass || !this.isConnected) {
+      return;
+    }
+    this._unsubscribePromise = this._hass.connection
+      .subscribeMessage(
+        (message) => {
+          this._rendered = message.result ?? "";
+          this._render();
+        },
+        { type: "render_template", template: String(this._config.text), strict: false }
+      )
+      .catch((err) => {
+        // A broken template shows as-is, which is usually enough of a hint.
+        this._rendered = String(this._config.text);
+        this._render();
+        this._unsubscribePromise = undefined;
+        console.warn("picture-elements-plus: template failed", err);
+      });
+  }
+
+  _unsubscribe() {
+    const pending = this._unsubscribePromise;
+    this._unsubscribePromise = undefined;
+    this._rendered = undefined;
+    pending?.then((unsubscribe) => unsubscribe && unsubscribe()).catch(() => {});
+  }
+}
+
+// The form shown when you edit a text element in the card editor.
+class PictureElementsPlusTextEditor extends HTMLElement {
+  set hass(hass) {
+    this._hass = hass;
+    if (this._form) this._form.hass = hass;
+  }
+
+  setConfig(config) {
+    this._config = config;
+    this._render();
+  }
+
+  _render() {
+    if (!this._form) {
+      this._form = document.createElement("ha-form");
+      this._form.computeLabel = (field) =>
+        ({ text: "Text or template", size: "Size (% of plan width)", color: "Colour", bold: "Bold" })[field.name];
+      this._form.schema = [
+        { name: "text", required: true, selector: { template: {} } },
+        { name: "size", selector: { number: { min: 1, max: 15, step: 0.5, mode: "slider" } } },
+        { name: "color", selector: { ui_color: {} } },
+        { name: "bold", selector: { boolean: {} } },
+      ];
+      this._form.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        // Keep the type and position, which the form doesn't show.
+        const config = { ...this._config, ...ev.detail.value };
+        fireEvent(this, "config-changed", { config });
+      });
+      this.append(this._form);
+    }
+    this._form.hass = this._hass;
+    this._form.data = { size: 3, ...this._config };
+  }
+}
+
 /* ------------------------------------------------------------------ */
 /* The card                                                            */
 /* ------------------------------------------------------------------ */
 
-class PictureElementsPlusCard extends HTMLElement {
-  constructor() {
-    super();
-    this._preview = false;
-    this.attachShadow({ mode: "open" });
-    this.shadowRoot.innerHTML = `
-      <style>
-        :host { display: block; height: 100%; }
-        .wrapper { position: relative; height: 100%; }
-        .overlay {
-          position: absolute;
-          pointer-events: none;
-          display: none;
-        }
-        .overlay.visible { display: block; }
-        .guide {
-          position: absolute;
-          border: 0 dashed var(--secondary-text-color);
-          opacity: 0.6;
-        }
-        .guide.vertical { top: 0; bottom: 0; border-left-width: 1px; }
-        .guide.horizontal { left: 0; right: 0; border-top-width: 1px; }
-        .guide.aligned {
-          border-color: var(--accent-color, #ff9800);
-          border-style: solid;
-          opacity: 1;
-        }
-        .readout {
-          position: absolute;
-          top: 6px;
-          left: 6px;
-          padding: 2px 8px;
-          border-radius: 10px;
-          font: 12px/18px var(--ha-font-family-body, Roboto, sans-serif);
-          font-variant-numeric: tabular-nums;
-          color: var(--text-primary-color, #fff);
-          background: var(--primary-color);
-        }
-        .error {
-          padding: 16px;
-          color: var(--error-color, #db4437);
-        }
-      </style>
-      <div class="wrapper">
-        <div class="overlay">
-          <div class="guide vertical"></div>
-          <div class="guide horizontal"></div>
-          <div class="readout"></div>
-        </div>
-      </div>
-    `;
-    this._wrapper = this.shadowRoot.querySelector(".wrapper");
-    this._overlay = this.shadowRoot.querySelector(".overlay");
-    this._vGuide = this.shadowRoot.querySelector(".guide.vertical");
-    this._hGuide = this.shadowRoot.querySelector(".guide.horizontal");
-    this._readout = this.shadowRoot.querySelector(".readout");
+const CARD_STYLES = `
+  :host { display: block; height: 100%; }
+  /* Scrolls sideways when the plan is set bigger than the card. */
+  .wrapper { position: relative; height: 100%; overflow-x: auto; }
+  hui-picture-elements-card { display: block; margin: 0 auto; }
 
-    this._onBridgeChanged = () => this._drawGuides();
+  .overlay {
+    position: absolute;
+    pointer-events: none;
+    display: none;
+  }
+  .overlay.visible { display: block; }
 
-    // Capture phase so we see the press before HA's own handler grabs it.
-    this._wrapper.addEventListener(
-      "pointerdown",
-      (ev) => {
-        this._dragIndex = this._indexFromEvent(ev);
-      },
-      true
-    );
-    this._wrapper.addEventListener("pointermove", () => this._scheduleDraw());
-    this._wrapper.addEventListener("pointerup", () => {
-      this._dragIndex = undefined;
-      this._scheduleDraw();
-    });
+  .line { position: absolute; display: none; }
+  .line.vertical { top: 0; bottom: 0; border-left: 1px dashed; }
+  .line.horizontal { left: 0; right: 0; border-top: 1px dashed; }
+  .line.shown { display: block; }
+
+  /* The cross through the element being moved */
+  .cross { border-color: var(--secondary-text-color); opacity: 0.6; }
+  .cross.element { border-color: var(--accent-color, #ff9800); border-style: solid; opacity: 1; }
+  .cross.guide { border-color: var(--pep-guide-color, #ab47bc); border-style: solid; opacity: 1; }
+
+  /* Quarter and half-way lines, only while dragging */
+  .quarter { border-color: var(--pep-guide-color, #ab47bc); opacity: 0.6; }
+
+  .chip {
+    position: absolute;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font: 12px/18px var(--ha-font-family-body, Roboto, sans-serif);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .position {
+    top: 6px;
+    left: 6px;
+    color: var(--text-primary-color, #fff);
+    background: var(--primary-color);
+  }
+  .size {
+    bottom: 6px;
+    left: 6px;
+    color: #fff;
+    background: rgba(0, 0, 0, 0.6);
   }
 
+  .error { padding: 16px; color: var(--error-color, #db4437); }
+`;
+
+class PictureElementsPlusCard extends HTMLElement {
   static getConfigElement() {
-    return document.createElement("picture-elements-plus-editor");
+    return document.createElement(`${CARD_TYPE}-editor`);
   }
 
   static getStubConfig(hass) {
@@ -291,16 +493,61 @@ class PictureElementsPlusCard extends HTMLElement {
     );
     return {
       type: `custom:${CARD_TYPE}`,
-      image: "https://demo.home-assistant.io/stub_config/floorplan.png",
+      image: PLACEHOLDER_IMAGE,
       elements: entity
-        ? [{ type: "state-icon", entity, style: { left: "40%", top: "32%" } }]
+        ? [{ type: "state-icon", entity, style: { left: "50%", top: "50%" } }]
         : [],
     };
   }
 
+  constructor() {
+    super();
+    this._preview = false;
+    this.attachShadow({ mode: "open" });
+    this.shadowRoot.innerHTML = `
+      <style>${CARD_STYLES}</style>
+      <div class="wrapper">
+        <div class="overlay">
+          ${PLAN_GUIDES.map((p) => `<div class="line vertical quarter" style="left:${p}%"></div>`).join("")}
+          ${PLAN_GUIDES.map((p) => `<div class="line horizontal quarter" style="top:${p}%"></div>`).join("")}
+          <div class="line vertical cross"></div>
+          <div class="line horizontal cross"></div>
+          <div class="chip position"></div>
+          <div class="chip size"></div>
+        </div>
+      </div>
+    `;
+    const $ = (selector) => this.shadowRoot.querySelector(selector);
+    this._wrapper = $(".wrapper");
+    this._overlay = $(".overlay");
+    this._crossV = $(".cross.vertical");
+    this._crossH = $(".cross.horizontal");
+    this._quarters = this.shadowRoot.querySelectorAll(".quarter");
+    this._positionChip = $(".position");
+    this._sizeChip = $(".size");
+
+    this._onBridgeChanged = () => this._scheduleOverlay();
+
+    // Capture phase, so we see which element was pressed before HA's drag
+    // handler takes the pointer.
+    this._wrapper.addEventListener("pointerdown", (ev) => {
+      this._dragIndex = this._indexFromEvent(ev);
+    }, true);
+    this._wrapper.addEventListener("pointermove", () => this._scheduleOverlay());
+    this._wrapper.addEventListener("pointerup", () => {
+      this._dragIndex = undefined;
+      this._scheduleOverlay();
+    });
+
+    // The size readout and text size depend on the plan's width.
+    this._resizeObserver = new ResizeObserver(() => this._scheduleStyling());
+    // Elements get replaced when HA rebuilds them.
+    this._mutationObserver = new MutationObserver(() => this._scheduleStyling());
+  }
+
   setConfig(config) {
-    // Same checks the built-in card makes, so errors show up straight away
-    // even before HA's card has finished loading.
+    // Same checks the built-in card makes, so errors show straight away even
+    // before HA's card has loaded.
     if (!config) throw new Error("Invalid configuration");
     if (
       !(config.image || config.image_entity || config.camera_image || config.state_image) ||
@@ -316,7 +563,7 @@ class PictureElementsPlusCard extends HTMLElement {
     if (this._card) {
       this._applyConfig();
     } else if (customElements.get("hui-picture-elements-card")) {
-      // Already loaded: build it right away so the preview doesn't flicker.
+      // Already loaded: build it now so the editor preview doesn't flicker.
       this._createCard();
     } else {
       loadPictureElementsCard().then(() => this._createCard());
@@ -324,8 +571,11 @@ class PictureElementsPlusCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const first = !this._hass;
     this._hass = hass;
     if (this._card) this._card.hass = hass;
+    // State badges render after the first hass, so colour them then.
+    if (first) this._scheduleStyling();
   }
 
   get hass() {
@@ -333,9 +583,13 @@ class PictureElementsPlusCard extends HTMLElement {
   }
 
   set preview(value) {
+    const changed = value !== this._preview;
     this._preview = value;
-    if (this._card) this._card.preview = value;
-    this._drawGuides();
+    if (this._card) {
+      this._card.preview = value;
+      // Hidden elements are shown while editing, so the config differs.
+      if (changed) this._applyConfig();
+    }
   }
 
   get preview() {
@@ -348,11 +602,14 @@ class PictureElementsPlusCard extends HTMLElement {
 
   connectedCallback() {
     this._bridge?.addEventListener("changed", this._onBridgeChanged);
-    this._drawGuides();
+    this._observe();
+    this._scheduleOverlay();
   }
 
   disconnectedCallback() {
     this._bridge?.removeEventListener("changed", this._onBridgeChanged);
+    this._resizeObserver.disconnect();
+    this._mutationObserver.disconnect();
   }
 
   _createCard() {
@@ -364,11 +621,25 @@ class PictureElementsPlusCard extends HTMLElement {
     this._wrapper.prepend(this._card);
   }
 
-  _applyConfig() {
-    // Spreading keeps the bridge symbol, which is what makes dragging work.
+  // What HA's card gets: our own options removed, and elements with
+  // visibility conditions wrapped in a conditional element. Spreading keeps
+  // the bridge symbol, which is what makes dragging work.
+  _innerConfig() {
     const config = { ...this._config, type: "picture-elements" };
+    for (const key of OWN_OPTIONS) delete config[key];
+    config.elements = this._config.elements.map((element) => {
+      if (!element.visibility) return element;
+      const { visibility, ...rest } = element;
+      // While editing everything stays on the plan, or you couldn't move it.
+      if (this._preview) return rest;
+      return { type: "conditional", conditions: visibility, elements: [rest] };
+    });
+    return config;
+  }
+
+  _applyConfig() {
     try {
-      this._card.setConfig(config);
+      this._card.setConfig(this._innerConfig());
       this._error?.remove();
       this._error = undefined;
     } catch (err) {
@@ -379,7 +650,9 @@ class PictureElementsPlusCard extends HTMLElement {
       }
       this._error.textContent = err.message;
     }
-    this._drawGuides();
+    this._observe();
+    this._scheduleStyling();
+    this._scheduleOverlay();
   }
 
   _setBridge(bridge) {
@@ -397,11 +670,25 @@ class PictureElementsPlusCard extends HTMLElement {
   }
 
   // Top-level elements in the same order as config.elements. HA renders the
-  // background image first and then one node per element.
+  // background image first, then one node per element.
   get _renderedElements() {
     const root = this._root;
     if (!root) return [];
     return [...root.children].filter((node) => node.tagName !== "HUI-IMAGE");
+  }
+
+  _observe() {
+    const root = this._root;
+    if (!root || root === this._observedRoot) {
+      // HA's card renders asynchronously; try again once it has.
+      if (!root && this._card) requestAnimationFrame(() => this._observe());
+      return;
+    }
+    this._observedRoot = root;
+    this._resizeObserver.disconnect();
+    this._mutationObserver.disconnect();
+    this._resizeObserver.observe(root);
+    this._mutationObserver.observe(root, { childList: true, subtree: true });
   }
 
   _indexFromEvent(ev) {
@@ -414,92 +701,162 @@ class PictureElementsPlusCard extends HTMLElement {
     return undefined;
   }
 
-  _scheduleDraw() {
-    if (this._drawQueued) return;
-    this._drawQueued = true;
+  /* ---- plan size and colours ---- */
+
+  _scheduleStyling() {
+    if (this._stylingQueued) return;
+    this._stylingQueued = true;
     requestAnimationFrame(() => {
-      this._drawQueued = false;
-      this._drawGuides();
+      this._stylingQueued = false;
+      this._applyStyling();
     });
   }
 
-  // While editing, draw a cross through the selected (or dragged) element
-  // and show where it will end up once snapping is applied.
-  _drawGuides() {
+  _applyStyling() {
+    const root = this._root;
+    if (!root || !this._config) return;
+
+    // Plan size is a share of the card's width. Above 100% the card scrolls.
+    const planSize = Number(this._config.plan_size) || 100;
+    this._card.style.width = planSize === 100 ? "" : `${planSize}%`;
+
+    const width = root.offsetWidth;
+    // 1% of the plan's width, used by text elements.
+    this._card.style.setProperty("--pep-unit", `${width / 100}px`);
+
+    const iconColor = cssColor(this._config.icon_color);
+    const activeColor = cssColor(this._config.active_color);
+    if (iconColor) this._card.style.setProperty("--state-icon-color", iconColor);
+    else this._card.style.removeProperty("--state-icon-color");
+
+    const hiddenIndexes = this._preview ? this._hiddenIndexes() : new Set();
+    const topLevel = this._renderedElements;
+
+    // querySelectorAll also finds elements inside conditional elements.
+    for (const node of root.querySelectorAll(".element")) {
+      if (node.tagName === "HUI-ICON-ELEMENT" && !node.style.color) {
+        node.dataset.pepColored = "";
+      }
+      if (node.dataset.pepColored !== undefined) {
+        node.style.color = iconColor || "";
+      }
+      const badge = node.shadowRoot?.querySelector("state-badge");
+      if (badge) {
+        // state-badge only uses a custom colour when the entity is "on".
+        badge.color = activeColor || undefined;
+      }
+      const index = topLevel.indexOf(node);
+      node.style.opacity = index !== -1 && hiddenIndexes.has(index) ? "0.5" : "";
+    }
+
+    this._sizeText = width
+      ? `Plan ${Math.round(width)} \u00d7 ${Math.round(root.offsetHeight)} px` +
+        (planSize !== 100 ? ` (${planSize}%)` : "")
+      : "";
+    this._scheduleOverlay();
+  }
+
+  // Elements with visibility conditions, faded in the editor so you can tell.
+  _hiddenIndexes() {
+    const indexes = new Set();
+    this._config.elements.forEach((element, index) => {
+      if (element.visibility?.length) indexes.add(index);
+    });
+    return indexes;
+  }
+
+  /* ---- editing overlay ---- */
+
+  _scheduleOverlay() {
+    if (this._overlayQueued) return;
+    this._overlayQueued = true;
+    requestAnimationFrame(() => {
+      this._overlayQueued = false;
+      this._drawOverlay();
+    });
+  }
+
+  // While editing: the plan's size in the corner, and when an element
+  // is selected or dragged, a cross through it with its position. During a
+  // drag the cross and position show where it will land after snapping.
+  _drawOverlay() {
     const bridge = this._bridge;
     const root = this._root;
     const editing = this._preview && bridge?.active;
-    const dragging = !!root?.classList.contains("dragging");
-    const index = dragging ? this._dragIndex : bridge?.selectedIndex;
-    const node = index !== undefined ? this._renderedElements[index] : undefined;
-
-    if (!editing || !root || !node || !root.offsetWidth) {
+    if (!editing || !root || !root.offsetWidth) {
       this._overlay.classList.remove("visible");
       return;
-    }
-
-    // During a drag HA moves the element by setting its style directly, so
-    // reading the style gives the live position.
-    let left = parsePercent(node.style.left);
-    let top = parsePercent(node.style.top);
-    if (left === undefined || top === undefined) {
-      this._overlay.classList.remove("visible");
-      return;
-    }
-
-    let alignedLeft = false;
-    let alignedTop = false;
-    if (dragging) {
-      const snapped = snapPosition(
-        left,
-        top,
-        this._config.elements,
-        index,
-        loadSnapSetting()
-      );
-      ({ left, top, alignedLeft, alignedTop } = snapped);
     }
 
     const wrapperRect = this._wrapper.getBoundingClientRect();
     const rootRect = root.getBoundingClientRect();
     Object.assign(this._overlay.style, {
-      left: `${rootRect.left - wrapperRect.left}px`,
-      top: `${rootRect.top - wrapperRect.top}px`,
+      left: `${rootRect.left - wrapperRect.left + this._wrapper.scrollLeft}px`,
+      top: `${rootRect.top - wrapperRect.top + this._wrapper.scrollTop}px`,
       width: `${rootRect.width}px`,
       height: `${rootRect.height}px`,
     });
-    this._vGuide.style.left = `${left}%`;
-    this._hGuide.style.top = `${top}%`;
-    this._vGuide.classList.toggle("aligned", alignedLeft);
-    this._hGuide.classList.toggle("aligned", alignedTop);
-    this._readout.textContent = `left ${left}%  \u00b7  top ${top}%`;
     this._overlay.classList.add("visible");
+    this._sizeChip.textContent = this._sizeText || "";
+
+    const dragging = root.classList.contains("dragging");
+    const index = dragging ? this._dragIndex : bridge.selectedIndex;
+    const node = index !== undefined ? this._renderedElements[index] : undefined;
+    let left = node && parsePercent(node.style.left);
+    let top = node && parsePercent(node.style.top);
+
+    for (const line of this._quarters) line.classList.toggle("shown", dragging);
+
+    if (left === undefined || top === undefined) {
+      this._crossV.classList.remove("shown");
+      this._crossH.classList.remove("shown");
+      this._positionChip.style.display = "none";
+      return;
+    }
+
+    let leftKind;
+    let topKind;
+    if (dragging) {
+      // HA moves the element by setting its style directly during a drag.
+      ({ left, top, leftKind, topKind } = snapPosition(
+        left, top, this._config.elements, index, loadSnapSetting()
+      ));
+    }
+
+    this._crossV.style.left = `${left}%`;
+    this._crossH.style.top = `${top}%`;
+    this._crossV.className = `line vertical cross shown ${leftKind || ""}`;
+    this._crossH.className = `line horizontal cross shown ${topKind || ""}`;
+    this._positionChip.style.display = "";
+    this._positionChip.textContent = `left ${left}%  \u00b7  top ${top}%`;
   }
 }
 
 /* ------------------------------------------------------------------ */
-/* The editor                                                          */
+/* The card editor                                                     */
 /* ------------------------------------------------------------------ */
 
 const EDITOR_STYLES = `
   :host { display: block; }
 
-  .picker {
+  .panel {
     margin-top: 16px;
     border: 1px solid var(--divider-color);
     border-radius: var(--ha-card-border-radius, 12px);
     overflow: hidden;
   }
-  .picker[hidden] { display: none; }
+  .panel[hidden] { display: none; }
 
-  .picker-header {
+  .panel-header {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 12px 16px 4px;
     font-weight: 500;
   }
-  .picker-header ha-icon { color: var(--primary-color); }
+  .panel-header ha-icon { color: var(--primary-color); }
+  .panel-body { padding: 8px 16px 12px; }
+  .hint { font-size: 12px; color: var(--secondary-text-color); margin: 4px 0 0; }
 
   .row {
     display: flex;
@@ -627,9 +984,7 @@ const EDITOR_STYLES = `
     font-size: 13px;
   }
 
-  .footer {
-    border-top: 1px solid var(--divider-color);
-  }
+  .footer { border-top: 1px solid var(--divider-color); }
 
   .tips {
     margin: 12px 0 0;
@@ -648,6 +1003,21 @@ const EDITOR_STYLES = `
 // it. If HA changes its markup the old button simply shows up again.
 const HIDE_ADD_BUTTON = `ha-dropdown, ha-button-menu, ha-md-button-menu { display: none !important; }`;
 
+const STYLE_SCHEMA = [
+  {
+    name: "plan_size",
+    selector: { number: { min: 25, max: 300, step: 5, mode: "slider", unit_of_measurement: "%" } },
+  },
+  { name: "icon_color", selector: { ui_color: {} } },
+  { name: "active_color", selector: { ui_color: {} } },
+];
+
+const STYLE_LABELS = {
+  plan_size: "Plan size (% of card width)",
+  icon_color: "Icon colour",
+  active_color: "Icon colour when on",
+};
+
 class PictureElementsPlusEditor extends HTMLElement {
   constructor() {
     super();
@@ -658,11 +1028,17 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._hideUsed = true;
     this._showAll = false;
     this._snap = loadSnapSetting();
+
+    // HA's editor rejects element keys it doesn't know, so `visibility` is
+    // taken off each element on the way in and put back on the way out.
+    // These remember which stripped copy belongs to which element.
+    this._strippedCopy = new WeakMap();
+    this._visibilityOf = new WeakMap();
     this._wrappedBridges = new WeakSet();
 
     this._onKeyDown = this._onKeyDown.bind(this);
     this._onInnerConfigChanged = this._onInnerConfigChanged.bind(this);
-    this._onBridgeChanged = () => this._updatePickerVisibility();
+    this._onBridgeChanged = () => this._updatePanels();
   }
 
   set hass(hass) {
@@ -672,16 +1048,20 @@ class PictureElementsPlusEditor extends HTMLElement {
       Object.keys(hass.states).length !== Object.keys(this._hass.states).length;
     this._hass = hass;
     if (this._inner) this._inner.hass = hass;
+    if (this._styleForm) this._styleForm.hass = hass;
+    if (this._conditionsEditor) this._conditionsEditor.hass = hass;
     // States change all the time; only redraw the list when the set of
-    // entities does, otherwise typing gets laggy on big installs.
+    // entities does, or typing gets laggy on big installs.
     if (entitiesChanged) this._renderPicker();
   }
 
   setConfig(config) {
     this._config = config;
     this._captureBridge(config);
-    if (this._inner) this._inner.setConfig(config);
+    this._inner?.setConfig(this._toInner(config));
+    this._renderStyleForm();
     this._renderPicker();
+    this._updatePanels();
   }
 
   connectedCallback() {
@@ -693,13 +1073,44 @@ class PictureElementsPlusEditor extends HTMLElement {
     window.removeEventListener("keydown", this._onKeyDown);
   }
 
+  /* ---- building ---- */
+
   _build() {
     this.attachShadow({ mode: "open" });
     this.shadowRoot.innerHTML = `
       <style>${EDITOR_STYLES}</style>
       <div class="inner"></div>
-      <div class="picker">
-        <div class="picker-header">
+
+      <div class="panel visibility" hidden>
+        <div class="panel-header">
+          <ha-icon icon="mdi:eye-outline"></ha-icon>
+          Visibility
+        </div>
+        <div class="panel-body">
+          <div class="conditions"></div>
+          <p class="hint">Show this element only when all of these are true.
+            It always shows (faded) while you're editing.</p>
+        </div>
+      </div>
+
+      <div class="panel style">
+        <div class="panel-header">
+          <ha-icon icon="mdi:palette-outline"></ha-icon>
+          Plan style
+        </div>
+        <div class="panel-body">
+          <div class="style-form"></div>
+          <p class="hint">Make the plan bigger to make the icons look smaller
+            on it, or smaller to make them look bigger. Over 100% the card
+            scrolls sideways. The preview shows the plan's size in pixels.</p>
+          <div class="chips" style="margin-top:8px">
+            <button class="chip reset-style">Back to HA's normal size and colours</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel picker">
+        <div class="panel-header">
           <ha-icon icon="mdi:map-marker-plus-outline"></ha-icon>
           Add to plan
         </div>
@@ -710,9 +1121,7 @@ class PictureElementsPlusEditor extends HTMLElement {
           </label>
           <select class="area" title="Room"></select>
         </div>
-        <div class="row">
-          <div class="chips domains"></div>
-        </div>
+        <div class="row"><div class="chips domains"></div></div>
         <div class="row">
           <span class="label">Add as</span>
           <div class="chips add-as"></div>
@@ -737,21 +1146,24 @@ class PictureElementsPlusEditor extends HTMLElement {
           </div>
         </div>
       </div>
+
       <p class="tips">
-        Drag elements in the preview to move them. With one selected, use the
-        arrow keys to nudge it (<kbd>Shift</kbd> for bigger steps,
-        <kbd>Alt</kbd> for 0.1%).
+        Drag elements in the preview to move them. With one selected, the
+        arrow keys nudge it (<kbd>Shift</kbd> for bigger steps, <kbd>Alt</kbd>
+        for 0.1%).
       </p>
     `;
 
-    const root = this.shadowRoot;
-    this._picker = root.querySelector(".picker");
-    this._tips = root.querySelector(".tips");
-    this._resultsEl = root.querySelector(".results");
-    this._domainsEl = root.querySelector(".domains");
-    this._areaEl = root.querySelector(".area");
+    const $ = (selector) => this.shadowRoot.querySelector(selector);
+    this._picker = $(".picker");
+    this._stylePanel = $(".style");
+    this._visibilityPanel = $(".visibility");
+    this._tips = $(".tips");
+    this._resultsEl = $(".results");
+    this._domainsEl = $(".domains");
+    this._areaEl = $(".area");
 
-    const searchInput = root.querySelector(".search input");
+    const searchInput = $(".search input");
     searchInput.addEventListener("input", () => {
       this._search = searchInput.value;
       this._renderResults();
@@ -769,28 +1181,36 @@ class PictureElementsPlusEditor extends HTMLElement {
       this._renderResults();
     });
 
-    const hideUsed = root.querySelector(".hide-used");
+    const hideUsed = $(".hide-used");
     hideUsed.checked = this._hideUsed;
     hideUsed.addEventListener("change", () => {
       this._hideUsed = hideUsed.checked;
       this._renderResults();
     });
 
-    const showAll = root.querySelector(".show-all");
+    const showAll = $(".show-all");
     showAll.checked = this._showAll;
     showAll.addEventListener("change", () => {
       this._showAll = showAll.checked;
       this._renderPicker();
     });
 
-    this._renderAddAs();
-    this._renderOthers();
-    this._renderSnap();
+    $(".reset-style").addEventListener("click", () => {
+      const config = { ...this._config };
+      for (const key of OWN_OPTIONS) delete config[key];
+      this._emitConfig(config);
+      this._renderStyleForm();
+    });
+
     this._resultsEl.addEventListener("click", (ev) => {
       const button = ev.target.closest(".result");
       if (button) this._addEntity(button.dataset.entity);
     });
 
+    this._renderAddAs();
+    this._renderOthers();
+    this._renderSnap();
+    this._renderStyleForm();
     this._loadInnerEditor();
   }
 
@@ -799,29 +1219,25 @@ class PictureElementsPlusEditor extends HTMLElement {
     const inner = await cardClass.getConfigElement();
     inner.addEventListener("config-changed", this._onInnerConfigChanged);
     if (this._hass) inner.hass = this._hass;
-    if (this._config) inner.setConfig(this._config);
+    if (this._config) inner.setConfig(this._toInner(this._config));
     this.shadowRoot.querySelector(".inner").append(inner);
     this._inner = inner;
 
-    // The inner editor swaps between its element list and the editor for a
-    // single element. Watch for that to hide the old add button and to only
-    // show the picker on the list.
+    // HA's editor swaps between its element list and the form for a single
+    // element. Watch for that to hide the old add button and to switch our
+    // panels around.
     const watch = () => {
       this._hideBuiltInAddButton();
-      this._updatePickerVisibility();
+      this._openCardOptionsIfNeeded();
+      this._updatePanels();
     };
     await inner.updateComplete;
-    new MutationObserver(watch).observe(inner.shadowRoot, {
-      childList: true,
-      subtree: true,
-    });
+    new MutationObserver(watch).observe(inner.shadowRoot, { childList: true, subtree: true });
     watch();
   }
 
   _hideBuiltInAddButton() {
-    const rowEditor = this._inner?.shadowRoot?.querySelector(
-      "hui-picture-elements-card-row-editor"
-    );
+    const rowEditor = this._inner?.shadowRoot?.querySelector("hui-picture-elements-card-row-editor");
     const shadow = rowEditor?.shadowRoot;
     if (!shadow || shadow.__pepHidden) return;
     try {
@@ -834,28 +1250,89 @@ class PictureElementsPlusEditor extends HTMLElement {
     }
   }
 
-  _updatePickerVisibility() {
-    if (!this._picker) return;
-    const editingOne = !!this._inner?.shadowRoot?.querySelector(
-      "hui-sub-element-editor"
-    );
-    this._picker.hidden = editingOne;
-    this._tips.hidden = !this._bridge;
+  // Until a floor plan is chosen, open "Card options" so the image picker is
+  // the first thing you see. Only once per editor, so it doesn't fight you.
+  _openCardOptionsIfNeeded() {
+    if (this._openedOptions || !this._config || !isPlaceholder(this._config.image)) return;
+    if (this._config.camera_image || this._config.image_entity || this._config.state_image) return;
+    const form = this._inner?.shadowRoot?.querySelector("ha-form");
+    const expandable = form?.shadowRoot?.querySelector("ha-form-expandable");
+    const panel = expandable?.shadowRoot?.querySelector("ha-expansion-panel");
+    if (!panel) return;
+    panel.expanded = true;
+    this._openedOptions = true;
   }
 
-  // Everything the inner editor changes goes through here on its way out.
+  // Which of our panels show depends on what HA's editor is showing.
+  _updatePanels() {
+    if (!this._picker) return;
+    const editingOne = !!this._inner?.shadowRoot?.querySelector("hui-sub-element-editor");
+    this._picker.hidden = editingOne;
+    this._stylePanel.hidden = editingOne;
+    this._tips.hidden = !this._bridge;
+
+    const index = editingOne ? this._bridge?.selectedIndex : undefined;
+    const element = index !== undefined ? this._config?.elements?.[index] : undefined;
+    const canHaveVisibility = element && element.type !== "conditional";
+    this._visibilityPanel.hidden = !canHaveVisibility;
+    if (canHaveVisibility) this._renderConditions(index, element);
+  }
+
+  /* ---- config plumbing ---- */
+
+  // What HA's editor gets: no card options of ours, no element visibility.
+  _toInner(config) {
+    const inner = { ...config };
+    for (const key of OWN_OPTIONS) delete inner[key];
+    inner.elements = (config.elements || []).map((element) => {
+      if (!element.visibility) return element;
+      let copy = this._strippedCopy.get(element);
+      if (!copy) {
+        const { visibility, ...rest } = element;
+        copy = rest;
+        this._strippedCopy.set(element, copy);
+        this._visibilityOf.set(copy, visibility);
+      }
+      return copy;
+    });
+    this._lastInnerElements = inner.elements;
+    return inner;
+  }
+
+  // And back again: put our options and the visibility conditions back on.
+  _fromInner(inner) {
+    const config = { ...inner };
+    for (const key of OWN_OPTIONS) {
+      if (this._config?.[key] !== undefined) config[key] = this._config[key];
+    }
+    const previous = this._lastInnerElements || [];
+    const selected = this._bridge?.selectedIndex;
+    config.elements = (inner.elements || []).map((element, index) => {
+      // Moved or reordered elements are the same object as before. An
+      // element edited in HA's form is a new object, but it's the selected one.
+      let visibility = this._visibilityOf.get(element);
+      if (!visibility && index === selected && previous[index]) {
+        visibility = this._visibilityOf.get(previous[index]);
+      }
+      return visibility ? { ...element, visibility } : element;
+    });
+    return config;
+  }
+
+  // Everything HA's editor changes passes through here on its way out.
   _onInnerConfigChanged(ev) {
     ev.stopPropagation();
-    const config = ev.detail.config;
+    const config = this._fromInner(ev.detail.config);
     this._captureBridge(config);
     this._config = config;
+    this._lastInnerElements = ev.detail.config.elements;
     fireEvent(this, "config-changed", { config });
     this._renderResults();
   }
 
   _emitConfig(config) {
     this._config = config;
-    if (this._inner) this._inner.setConfig(config);
+    this._inner?.setConfig(this._toInner(config));
     fireEvent(this, "config-changed", { config });
   }
 
@@ -867,10 +1344,10 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._bridge?.removeEventListener("changed", this._onBridgeChanged);
     this._bridge = bridge;
     bridge.addEventListener("changed", this._onBridgeChanged);
-    this._updatePickerVisibility();
+    this._updatePanels();
 
     // HA has no hook for adjusting a move, so wrap the handlers it calls
-    // when an element is dropped (or placed by clicking the image).
+    // when an element is dropped, or placed by clicking the image.
     if (this._wrappedBridges.has(bridge)) return;
     this._wrappedBridges.add(bridge);
     const { handlers } = bridge;
@@ -882,8 +1359,7 @@ class PictureElementsPlusEditor extends HTMLElement {
       originalMove(index, snapped.left, snapped.top);
     };
     handlers.clickImage = (left, top) => {
-      const index = bridge.selectedIndex;
-      const snapped = snapPosition(left, top, this._config?.elements, index, this._snap);
+      const snapped = snapPosition(left, top, this._config?.elements, bridge.selectedIndex, this._snap);
       originalClick(snapped.left, snapped.top);
     };
     // Kept for nudging, which shouldn't be pulled back onto the grid.
@@ -893,7 +1369,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   _onKeyDown(ev) {
     const bridge = this._bridge;
     const index = bridge?.selectedIndex;
-    if (!bridge?.active || index === undefined || !this.isConnected) return;
+    if (!bridge?.active || index === undefined || !this._moveWithoutSnap) return;
 
     const moves = {
       ArrowLeft: [-1, 0],
@@ -903,10 +1379,8 @@ class PictureElementsPlusEditor extends HTMLElement {
     };
     const move = moves[ev.key];
     if (!move || ev.ctrlKey || ev.metaKey) return;
-
     // Leave arrow keys alone when they're being used to type or pick.
-    const target = ev.composedPath()[0];
-    if (isTypingTarget(target)) return;
+    if (isTypingTarget(ev.composedPath()[0])) return;
 
     const style = this._config?.elements?.[index]?.style || {};
     const left = parsePercent(style.left);
@@ -924,7 +1398,68 @@ class PictureElementsPlusEditor extends HTMLElement {
     );
   }
 
-  /* -------------------------- picker ------------------------------ */
+  /* ---- plan style and visibility panels ---- */
+
+  _renderStyleForm() {
+    const container = this.shadowRoot?.querySelector(".style-form");
+    if (!container || !this._config) return;
+    if (!this._styleForm) {
+      this._styleForm = document.createElement("ha-form");
+      this._styleForm.schema = STYLE_SCHEMA;
+      this._styleForm.computeLabel = (field) => STYLE_LABELS[field.name];
+      this._styleForm.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        const config = { ...this._config };
+        for (const key of OWN_OPTIONS) {
+          const value = ev.detail.value[key];
+          if (value === undefined || value === "") delete config[key];
+          else config[key] = value;
+        }
+        this._emitConfig(config);
+      });
+      container.append(this._styleForm);
+    }
+    this._styleForm.hass = this._hass;
+    const data = {};
+    for (const key of OWN_OPTIONS) {
+      if (this._config[key] !== undefined) data[key] = this._config[key];
+    }
+    this._styleForm.data = data;
+  }
+
+  _renderConditions(index, element) {
+    const container = this.shadowRoot.querySelector(".conditions");
+    if (!customElements.get("ha-card-conditions-editor")) {
+      // Only there once the dialog's Visibility tab has loaded it.
+      container.innerHTML = `<p class="hint">Open the <b>Visibility</b> tab at the
+        top once to load the condition editor, or add a <code>visibility:</code>
+        list to this element in the code editor.</p>`;
+      this._conditionsEditor = undefined;
+      customElements.whenDefined("ha-card-conditions-editor").then(() => this._updatePanels());
+      return;
+    }
+    if (!this._conditionsEditor) {
+      container.innerHTML = "";
+      this._conditionsEditor = document.createElement("ha-card-conditions-editor");
+      this._conditionsEditor.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        this._setVisibility(this._conditionsIndex, ev.detail.value);
+      });
+      container.append(this._conditionsEditor);
+    }
+    this._conditionsIndex = index;
+    this._conditionsEditor.hass = this._hass;
+    this._conditionsEditor.conditions = element.visibility || [];
+  }
+
+  _setVisibility(index, conditions) {
+    const elements = [...this._config.elements];
+    const { visibility, ...rest } = elements[index];
+    elements[index] = conditions?.length ? { ...rest, visibility: conditions } : rest;
+    this._emitConfig({ ...this._config, elements });
+  }
+
+  /* ---- picker ---- */
 
   _renderPicker() {
     if (!this.shadowRoot || !this._hass) return;
@@ -947,9 +1482,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     const list = [];
     for (const [entityId, stateObj] of Object.entries(hass.states)) {
       const entry = hass.entities?.[entityId];
-      if (!this._showAll && entry && (entry.hidden || entry.entity_category)) {
-        continue;
-      }
+      if (!this._showAll && entry && (entry.hidden || entry.entity_category)) continue;
       const area = this._areaFor(entityId);
       const name = stateObj.attributes.friendly_name || entityId;
       list.push({
@@ -968,29 +1501,24 @@ class PictureElementsPlusEditor extends HTMLElement {
   _renderAreas() {
     const hass = this._hass;
     const areas = Object.values(hass.areas || {});
-    const floors = Object.values(hass.floors || {}).sort(
-      (a, b) => (a.level ?? 0) - (b.level ?? 0)
-    );
+    const floors = Object.values(hass.floors || {}).sort((a, b) => (a.level ?? 0) - (b.level ?? 0));
+    const option = (area) => `<option value="${escapeHtml(area.area_id)}">${escapeHtml(area.name)}</option>`;
+    const byName = (a, b) => a.name.localeCompare(b.name);
 
     let options = `<option value="">Any room</option>`;
-    const used = new Set();
+    const listed = new Set();
     for (const floor of floors) {
-      const onFloor = areas
-        .filter((area) => area.floor_id === floor.floor_id)
-        .sort((a, b) => a.name.localeCompare(b.name));
+      const onFloor = areas.filter((area) => area.floor_id === floor.floor_id).sort(byName);
       if (!onFloor.length) continue;
       options += `<optgroup label="${escapeHtml(floor.name)}">`;
       for (const area of onFloor) {
-        used.add(area.area_id);
-        options += `<option value="${escapeHtml(area.area_id)}">${escapeHtml(area.name)}</option>`;
+        listed.add(area.area_id);
+        options += option(area);
       }
       options += `</optgroup>`;
     }
-    const rest = areas
-      .filter((area) => !used.has(area.area_id))
-      .sort((a, b) => a.name.localeCompare(b.name));
-    for (const area of rest) {
-      options += `<option value="${escapeHtml(area.area_id)}">${escapeHtml(area.name)}</option>`;
+    for (const area of areas.filter((a) => !listed.has(a.area_id)).sort(byName)) {
+      options += option(area);
     }
     options += `<option value="__none__">No room</option>`;
 
@@ -1000,31 +1528,31 @@ class PictureElementsPlusEditor extends HTMLElement {
 
   _renderDomains() {
     const counts = {};
+    let helpers = 0;
     for (const item of this._entityList) {
       counts[item.domain] = (counts[item.domain] || 0) + 1;
+      if (HELPER_DOMAINS.has(item.domain)) helpers++;
     }
     // Most common domains first; the long tail is still reachable by search.
     const domains = Object.keys(counts)
+      .filter((domain) => !HELPER_DOMAINS.has(domain))
       .sort((a, b) => counts[b] - counts[a])
-      .slice(0, 10);
-    if (this._domain && !domains.includes(this._domain)) {
+      .slice(0, 9);
+    if (this._domain && this._domain !== "helpers" && !domains.includes(this._domain)) {
       domains.push(this._domain);
     }
 
-    const chip = (value, label, icon, count) => `
+    const chip = (value, label, count) => `
       <button class="chip" data-domain="${value}" aria-pressed="${this._domain === value}">
-        ${icon ? `<ha-icon icon="${icon}"></ha-icon>` : ""}
+        ${DOMAIN_ICONS[value] ? `<ha-icon icon="${DOMAIN_ICONS[value]}"></ha-icon>` : ""}
         ${escapeHtml(label)}
         ${count !== undefined ? `<span class="count">${count}</span>` : ""}
       </button>`;
 
     this._domainsEl.innerHTML =
       chip("", "All") +
-      domains
-        .map((domain) =>
-          chip(domain, prettyDomain(domain), DOMAIN_ICONS[domain], counts[domain] || 0)
-        )
-        .join("");
+      (helpers ? chip("helpers", "Helpers", helpers) : "") +
+      domains.map((domain) => chip(domain, prettyDomain(domain), counts[domain] || 0)).join("");
 
     for (const button of this._domainsEl.querySelectorAll(".chip")) {
       button.addEventListener("click", () => {
@@ -1035,78 +1563,39 @@ class PictureElementsPlusEditor extends HTMLElement {
     }
   }
 
-  _renderAddAs() {
-    const container = this.shadowRoot.querySelector(".add-as");
-    container.innerHTML = ELEMENT_TYPES.map(
-      (item) => `
-        <button class="chip" data-type="${item.type}" aria-pressed="${this._addAs === item.type}">
-          <ha-icon icon="${item.icon}"></ha-icon>${item.label}
-        </button>`
-    ).join("");
-    for (const button of container.querySelectorAll(".chip")) {
-      button.addEventListener("click", () => {
-        this._addAs = button.dataset.type;
-        this._renderAddAs();
-      });
-    }
-  }
-
-  _renderOthers() {
-    const container = this.shadowRoot.querySelector(".others");
-    container.innerHTML = OTHER_ELEMENTS.map(
-      (item) => `
-        <button class="chip" data-type="${item.type}">
-          <ha-icon icon="${item.icon}"></ha-icon>${item.label}
-        </button>`
-    ).join("");
-    for (const button of container.querySelectorAll(".chip")) {
-      button.addEventListener("click", () => this._addOther(button.dataset.type));
-    }
-  }
-
-  _renderSnap() {
-    const container = this.shadowRoot.querySelector(".snap");
-    const steps = [0, 0.5, 1, 2, 5];
-    container.innerHTML = steps
+  _renderChoiceChips(selector, items, isPressed, onClick) {
+    const container = this.shadowRoot.querySelector(selector);
+    container.innerHTML = items
       .map(
-        (step) => `
-        <button class="chip" data-step="${step}" aria-pressed="${this._snap === step}">
-          ${step ? `${step}%` : "Off"}
+        (item, i) => `
+        <button class="chip" data-i="${i}" aria-pressed="${isPressed(item)}">
+          ${item.icon ? `<ha-icon icon="${item.icon}"></ha-icon>` : ""}${item.label}
         </button>`
       )
       .join("");
     for (const button of container.querySelectorAll(".chip")) {
-      button.addEventListener("click", () => {
-        this._snap = parseFloat(button.dataset.step);
-        saveSnapSetting(this._snap);
-        this._renderSnap();
-      });
+      button.addEventListener("click", () => onClick(items[button.dataset.i]));
     }
   }
 
-  _filteredEntities() {
-    const words = this._search.toLowerCase().split(/\s+/).filter(Boolean);
-    const onPlan = this._entitiesOnPlan();
-
-    const matches = this._entityList.filter((item) => {
-      if (this._domain && item.domain !== this._domain) return false;
-      if (this._area === "__none__" && item.areaId) return false;
-      if (this._area && this._area !== "__none__" && item.areaId !== this._area) {
-        return false;
-      }
-      if (this._hideUsed && onPlan.has(item.entityId)) return false;
-      return words.every((word) => item.haystack.includes(word));
+  _renderAddAs() {
+    this._renderChoiceChips(".add-as", ELEMENT_TYPES, (item) => item.type === this._addAs, (item) => {
+      this._addAs = item.type;
+      this._renderAddAs();
     });
+  }
 
-    // Names that start with what you typed float to the top.
-    if (words.length) {
-      const first = words[0];
-      const score = (item) =>
-        item.name.toLowerCase().startsWith(first) ? 0 :
-        item.entityId.split(".")[1].startsWith(first) ? 1 : 2;
-      matches.sort((a, b) => score(a) - score(b));
-    }
-    return { matches, onPlan };
+  _renderOthers() {
+    this._renderChoiceChips(".others", OTHER_ELEMENTS, () => false, (item) => this._addOther(item.type));
+  }
+
+  _renderSnap() {
+    const steps = [0, 0.5, 1, 2, 5].map((step) => ({ step, label: step ? `${step}%` : "Off" }));
+    this._renderChoiceChips(".snap", steps, (item) => item.step === this._snap, (item) => {
+      this._snap = item.step;
+      saveSnapSetting(item.step);
+      this._renderSnap();
+    });
   }
 
   _entitiesOnPlan() {
@@ -1119,6 +1608,30 @@ class PictureElementsPlusEditor extends HTMLElement {
     };
     walk(this._config?.elements);
     return ids;
+  }
+
+  _filteredEntities() {
+    const words = this._search.toLowerCase().split(/\s+/).filter(Boolean);
+    const onPlan = this._entitiesOnPlan();
+
+    const matches = this._entityList.filter((item) => {
+      if (this._domain === "helpers" && !HELPER_DOMAINS.has(item.domain)) return false;
+      if (this._domain && this._domain !== "helpers" && item.domain !== this._domain) return false;
+      if (this._area === "__none__" && item.areaId) return false;
+      if (this._area && this._area !== "__none__" && item.areaId !== this._area) return false;
+      if (this._hideUsed && onPlan.has(item.entityId)) return false;
+      return words.every((word) => item.haystack.includes(word));
+    });
+
+    // Names that start with what you typed go to the top.
+    if (words.length) {
+      const first = words[0];
+      const score = (item) =>
+        item.name.toLowerCase().startsWith(first) ? 0 :
+        item.entityId.split(".")[1].startsWith(first) ? 1 : 2;
+      matches.sort((a, b) => score(a) - score(b));
+    }
+    return { matches, onPlan };
   }
 
   _renderResults() {
@@ -1152,9 +1665,9 @@ class PictureElementsPlusEditor extends HTMLElement {
     }
     this._resultsEl.innerHTML = html;
 
-    // ha-state-icon works out the right icon (including your custom icons
-    // and state-based ones) from the state object. It's normally loaded by
-    // the time the editor opens; if not, fall back to a plain icon.
+    // ha-state-icon works out the right icon (custom and state-based ones
+    // included) from the state object. It's normally loaded by the time the
+    // editor opens; if not, fall back to a plain icon.
     const haveStateIcon = !!customElements.get("ha-state-icon");
     const icons = this._resultsEl.querySelectorAll("ha-state-icon");
     shown.forEach((item, i) => {
@@ -1170,10 +1683,10 @@ class PictureElementsPlusEditor extends HTMLElement {
     });
   }
 
-  /* ------------------------- adding ------------------------------- */
+  /* ---- adding ---- */
 
   // Somewhere to drop a new element: the middle, unless something is
-  // already sitting there, in which case step down and to the right.
+  // already there, in which case step down and to the right.
   _freeSpot() {
     const taken = new Set(
       (this._config?.elements || []).map(
@@ -1201,9 +1714,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     const element = { type, entity: entityId, style: this._freeSpot() };
     // Badges already open more-info on tap, so only set actions on the rest.
     if (type !== "state-badge") {
-      element.tap_action = {
-        action: TOGGLE_DOMAINS.has(domain) ? "toggle" : "more-info",
-      };
+      element.tap_action = { action: TOGGLE_DOMAINS.has(domain) ? "toggle" : "more-info" };
       element.hold_action = { action: "more-info" };
     }
     return element;
@@ -1214,23 +1725,20 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._addElement(this._elementForEntity(entityId));
   }
 
-  async _addOther(type) {
-    let element = { type, style: this._freeSpot() };
-    if (type === "icon") {
-      element = { ...element, icon: "mdi:information-outline", tap_action: { action: "none" } };
-    } else if (type === "image") {
-      // Starts off as a small copy of the background, just so there's
-      // something to see. Swap the image in the element editor.
-      const background = this._config?.image;
-      const image = typeof background === "object" ? background.media_content_id : background;
-      element = { ...element, image: image || "", style: { ...element.style, width: "10%" } };
-    } else if (type === "action-button") {
-      element = { ...element, title: "Button", action: "homeassistant.update_entity" };
-    } else if (type === "conditional") {
+  _addOther(type) {
+    const style = this._freeSpot();
+    const background = this._config?.image;
+    const backgroundUrl = typeof background === "object" ? background.media_content_id : background;
+    const elements = {
+      text: { ...PictureElementsPlusText.getStubConfig(), style },
+      icon: { type, icon: "mdi:information-outline", tap_action: { action: "none" }, style },
+      // A small copy of the background, just so there's something to see.
+      image: { type, image: backgroundUrl || PLACEHOLDER_IMAGE, style: { ...style, width: "10%" } },
+      "action-button": { type, title: "Button", action: "homeassistant.update_entity", style },
       // Conditional elements only wrap others and aren't positioned themselves.
-      element = { type, conditions: [], elements: [] };
-    }
-    this._addElement(element);
+      conditional: { type, conditions: [], elements: [] },
+    };
+    this._addElement(elements[type]);
   }
 
   _addElement(element) {
@@ -1245,31 +1753,26 @@ class PictureElementsPlusEditor extends HTMLElement {
   }
 }
 
-function isTypingTarget(node) {
-  if (!(node instanceof HTMLElement)) return false;
-  if (node.isContentEditable) return true;
-  if (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName)) return true;
-  // Lists and menus use the arrow keys themselves.
-  const role = node.getAttribute("role");
-  return ["listbox", "option", "menu", "menuitem", "combobox", "slider", "textbox"].includes(role);
-}
+/* ------------------------------------------------------------------ */
+/* Registration                                                        */
+/* ------------------------------------------------------------------ */
 
-function prettyDomain(domain) {
-  const words = domain.replace(/_/g, " ");
-  return words.charAt(0).toUpperCase() + words.slice(1);
-}
-
+customElements.define(TEXT_TYPE, PictureElementsPlusText);
+customElements.define(`${TEXT_TYPE}-editor`, PictureElementsPlusTextEditor);
 customElements.define(CARD_TYPE, PictureElementsPlusCard);
-customElements.define("picture-elements-plus-editor", PictureElementsPlusEditor);
+customElements.define(`${CARD_TYPE}-editor`, PictureElementsPlusEditor);
 
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD_TYPE,
   name: "Picture Elements Plus",
-  description: "Picture elements with an entity picker and snapping when you drag things around.",
+  description: "Picture elements with an entity picker, icon sizing and colours, and snapping when you drag things around.",
   preview: false,
+  documentationURL: "https://github.com/MithUK1/picture-elements-plus",
 });
 
-console.info(`%c PICTURE-ELEMENTS-PLUS %c ${VERSION} `,
+console.info(
+  `%c PICTURE-ELEMENTS-PLUS %c ${VERSION} `,
   "color: white; background: #03a9f4; font-weight: 700;",
-  "color: #03a9f4; background: white; font-weight: 700;");
+  "color: #03a9f4; background: white; font-weight: 700;"
+);

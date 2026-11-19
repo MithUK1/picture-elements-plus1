@@ -17,7 +17,7 @@ the same, and any picture elements YAML you already have keeps working.
 - [Options](#options)
 - [Text on the plan](#text-on-the-plan)
 - [Room glow](#room-glow)
-- [Several floors in one card](#several-floors-in-one-card)
+- [Several images in one card](#several-images-in-one-card)
 - [Showing elements only sometimes](#showing-elements-only-sometimes)
 - [Full example](#full-example)
 - [Troubleshooting](#troubleshooting)
@@ -39,15 +39,16 @@ the same, and any picture elements YAML you already have keeps working.
   Text can also be a template, like the current temperature.
 - **Room glow.** A shape over a room that glows when its lights are on and
   turns red when there's motion or a door or window is open.
-- **Floors.** Ground floor, first floor and loft in one card, with tabs to
-  switch between them. A dot on a tab shows something is lit up or alerting
-  on that floor.
+- **Several images.** Floors, rooms, the garden, anything, in one card,
+  with your own names on tabs to switch between them. A dot on a tab shows
+  something is lit up or alerting on that image.
 
 **In the editor**
 
 - **Entity picker.** Search by name, entity id or room. You can also filter
   by type (with a Helpers filter that groups all your helpers) or by room,
-  grouped by floor. Click an entity to add it.
+  grouped by floor. Click an entity to put it on the plan, or drag it to
+  the exact spot.
 - **Sensible defaults.** Lights, switches and fans toggle when tapped.
   Sensors show their value and people show as badges.
 - **Drag to position**, with snapping and guide lines:
@@ -56,7 +57,7 @@ the same, and any picture elements YAML you already have keeps working.
   - the position you'll drop at, and the plan's size in pixels
 - **Arrow keys** to nudge the selected element.
 - **Select several** with Shift-click, then line them up, space them out,
-  resize them, move them together or move them to another floor.
+  resize them, move them together or move them to another image.
 - **Fill a room.** Pick a room and add all of its entities in one go, laid
   out in a neat grid.
 - **Undo and redo** with Ctrl+Z and Ctrl+Y.
@@ -113,14 +114,26 @@ take those out when switching back.
 
 ## Using the editor
 
-### Picking a floor plan
+### The Picture panel
 
-A new card starts with the sample plan above, and **Card options** is
-opened for you. Under **Image** you can upload a picture or pick one from
-your media. You can also use a camera there instead.
+The **Picture** panel at the top replaces Home Assistant's "Card options".
+It has:
 
-In YAML the sample plan shows as `image: sample-floor-plan`. It's built into
-the card, so nothing gets downloaded.
+- **Title**, shown above the plan (optional)
+- **Show: Image or Camera**. With **Image**, upload a picture or pick one
+  from your media, and optionally a different one for dark mode. With
+  **Camera**, pick a camera and whether to show snapshots or a live stream.
+  The image stays on the card until you've picked a camera.
+- **Add another image**, see [Several images in one card](#several-images-in-one-card)
+
+A new card starts with the sample plan above. In YAML it shows as
+`image: sample-floor-plan`. It's built into the card, so nothing gets
+downloaded.
+
+The built-in card's rarer settings (`state_image`, `image_entity`,
+`state_filter`, `dark_mode_filter` and `theme`) aren't in the panel, as they
+mostly confuse things. They still work if you set them in the code editor,
+and the panel tells you when a card has any.
 
 ### Adding things
 
@@ -138,7 +151,11 @@ The **Add to plan** panel sits under the list of elements.
    Lights, switches, fans, input booleans, sirens and humidifiers toggle on
    tap. Everything else opens more-info on tap. Holding always opens
    more-info.
-3. Click the entity, or press Enter to add the top result.
+3. Click the entity (or its **+**), or press Enter to add the top result.
+   It goes on the plan straight away, with a blue box round it, and the
+   list stays open so you can add the next one. Arrow keys nudge the new one.
+   Or **drag** the entity from the list and drop it on the preview where you
+   want it. Guide lines show where it will land.
 
 **Other** adds things that aren't tied to an entity: a room glow, text, an
 icon, an image, an action button or a conditional group.
@@ -163,8 +180,8 @@ schedules).
 
 ### Moving things
 
-- **Drag** an element in the preview. A new element is opened as soon as
-  it's added, so you can drag it straight into place.
+- **Drag** an element in the preview. A newly added one is picked (blue
+  box), so you can drag it or nudge it straight into place.
 - **Click** an element to open it. With one open, clicking on the plan moves
   it there.
 - **Arrow keys** nudge the open element by one snap step. Hold **Shift** for
@@ -193,7 +210,7 @@ one gets a blue box and a **Picked** panel appears under the element list:
 - **Line up** left, centre, right, top, middle or bottom, and **space evenly**
   across or down (with three or more)
 - **Size** them all at once
-- **Move to** another floor
+- **Move to** another image
 - **Remove from plan**
 
 Drag any picked element and the rest come with it. The arrow keys move them
@@ -235,7 +252,7 @@ takes, plus:
 | `plan_size` | Width of the plan as a percentage of the card. Below 100 the plan is centred and the icons look bigger on it. Above 100 it's bigger than the card, the icons look smaller on it, and the card scrolls sideways. | `plan_size: 150` |
 | `icon_color` | Colour of every icon on the plan. A theme colour name or any CSS colour. | `icon_color: blue-grey` |
 | `active_color` | Colour of icons when their entity is on, open, home and so on. This replaces HA's own colours, including the light's colour. | `active_color: amber` |
-| `floors` | Several floors in one card. See [below](#several-floors-in-one-card). | |
+| `pictures` | Several images in one card. See [below](#several-images-in-one-card). | |
 
 And on any element:
 
@@ -322,30 +339,35 @@ tells you how many it's following.
 While you're editing, room glows show a dashed outline and the room's name so
 you can find them.
 
-## Several floors in one card
+## Several images in one card
 
-Under the element list, the **Floors** panel has **Add floor**. The card's
-current plan becomes the first floor and a new floor is added with the sample
-plan. Then:
+One card can hold several images, each with its own elements: the floors
+of your house, separate rooms, the garden, a camera, whatever you like. The
+card shows their names as tabs.
 
-- click a floor to edit it (or click its tab in the preview)
-- pick its image under **Card options > Image**, like any card
+In the **Picture** panel, select **Add another image**. The card's current
+image becomes the first one and a new one is added with the sample plan,
+with its name box ready for you to type. Then:
+
+- click an image's name to edit it (or click its tab in the preview)
+- choose what it shows (image or camera) underneath
 - rename it, move it earlier or later, or remove it
-- move an element to another floor from its editor, or several at once
+- move an element to another image from its editor, or several at once
   with [Select several](#selecting-several)
 
-On the dashboard the card shows the floors as tabs in its top-right corner.
-A floor with a room glow that's lit up gets an amber dot on its tab, and a red
-dot if something's alerting there.
+On the dashboard the tabs sit in the card's top-right corner. An image with
+a room glow that's lit up gets an amber dot on its tab, and a red dot if
+something's alerting there.
 
-In YAML, the floors go in a `floors` list instead of `image` and `elements`
-at the top. Everything else (plan size, colours, title) is shared by all of
-them.
+In YAML, the images go in a `pictures` list instead of `image` and
+`elements` at the top. Everything else (title, plan size, colours) is shared
+by all of them.
 
 ```yaml
 type: custom:picture-elements-plus
+title: House
 plan_size: 120
-floors:
+pictures:
   - name: Ground floor
     image: /local/jpg/Newton_G.png
     elements:
@@ -355,12 +377,14 @@ floors:
   - name: First floor
     image: /local/jpg/Newton_1.png
     elements: []
-  - name: Loft
-    image: /local/jpg/Newton_2.png
+  - name: Driveway
+    camera_image: camera.driveway
     elements: []
 ```
 
-Removing floors until only one is left turns it back into a normal card.
+Removing images until only one is left turns it back into a normal card.
+Cards made with version 0.3, which called the list `floors`, still work and
+are switched over the next time you save them in the editor.
 
 ## Showing elements only sometimes
 
@@ -460,5 +484,5 @@ the built-in card doesn't know. Check the YAML against the examples above.
 ## Releasing a new version
 
 Bump `VERSION` at the top of `picture-elements-plus.js`, merge to `main`,
-then publish a GitHub release with a matching tag (for example `v0.3.0`).
+then publish a GitHub release with a matching tag (for example `v0.4.0`).
 The Marketplace checks custom repositories for new releases every 48 hours.

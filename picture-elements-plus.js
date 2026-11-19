@@ -34,7 +34,7 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.6.0";
+const VERSION = "0.7.0";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
@@ -1905,6 +1905,25 @@ const EDITOR_STYLES = `
 
 const HIDE_ADD_BUTTON = `ha-dropdown, ha-button-menu, ha-md-button-menu { display: none !important; }`;
 
+// Our own rows in HA's element list, which otherwise calls our elements
+// "Unknown type".
+const OWN_ROW_STYLES = `
+  .pep-label {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+  }
+  .pep-label .secondary {
+    font-size: 12px;
+    color: var(--secondary-text-color);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+`;
+
 // Only the top-level form in HA's editor: the one for a single element sits
 // inside another shadow root and isn't touched.
 const HIDE_CARD_OPTIONS = `ha-form { display: none !important; }`;
@@ -2348,6 +2367,57 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._addStyles(this._inner?.shadowRoot, HIDE_CARD_OPTIONS);
     const rowEditor = this._inner?.shadowRoot?.querySelector("hui-picture-elements-card-row-editor");
     this._addStyles(rowEditor?.shadowRoot, HIDE_ADD_BUTTON);
+    this._addStyles(rowEditor?.shadowRoot, OWN_ROW_STYLES);
+    this._labelRows(rowEditor);
+  }
+
+  // HA's list only knows its own element types. Ours get a proper name and a
+  // second line, laid over HA's row rather than changing it, so HA can keep
+  // redrawing it as usual.
+  _labelRows(rowEditor) {
+    const shadow = rowEditor?.shadowRoot;
+    if (!shadow) return;
+    if (!shadow.__pepWatched) {
+      shadow.__pepWatched = true;
+      new MutationObserver(() => this._labelRows(rowEditor))
+        .observe(shadow, { childList: true, subtree: true, characterData: true });
+    }
+    const elements = rowEditor.elements || [];
+    shadow.querySelectorAll(".elements .element").forEach((row, index) => {
+      const label = this._rowLabel(elements[index]);
+      const builtIn = row.querySelector(":scope > .element-row");
+      let ours = row.querySelector(":scope > .pep-label");
+      if (!label) {
+        ours?.remove();
+        if (builtIn) builtIn.style.display = "";
+        return;
+      }
+      if (!ours) {
+        ours = document.createElement("div");
+        ours.className = "pep-label";
+        ours.append(document.createElement("span"), document.createElement("span"));
+        ours.lastChild.className = "secondary";
+        (builtIn || row.querySelector(".handle"))?.after(ours);
+      }
+      if (ours.firstChild.textContent !== label.name) ours.firstChild.textContent = label.name;
+      if (ours.lastChild.textContent !== label.detail) ours.lastChild.textContent = label.detail;
+      if (builtIn) builtIn.style.display = "none";
+    });
+  }
+
+  _rowLabel(element) {
+    if (element?.type === `custom:${ROOM_TYPE}`) {
+      const area = element.area && this._hass?.areas?.[element.area];
+      const lights = [].concat(element.lights || []);
+      return {
+        name: "Room glow",
+        detail: area?.name || element.area || lights.join(", ") || "No room picked yet",
+      };
+    }
+    if (element?.type === `custom:${TEXT_TYPE}`) {
+      return { name: "Text", detail: element.text || "" };
+    }
+    return undefined;
   }
 
   _addStyles(shadow, css) {

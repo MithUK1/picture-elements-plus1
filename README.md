@@ -499,5 +499,5 @@ the built-in card doesn't know. Check the YAML against the examples above.
 ## Releasing a new version
 
 Bump `VERSION` at the top of `picture-elements-plus.js`, merge to `main`,
-then publish a GitHub release with a matching tag (for example `v0.6.0`).
+then publish a GitHub release with a matching tag (for example `v0.7.0`).
 The Marketplace checks custom repositories for new releases every 48 hours.

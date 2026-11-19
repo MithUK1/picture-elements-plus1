@@ -262,8 +262,10 @@ function isPlaceholder(image) {
 // top of the sample becomes the picture.
 function tidyImage(settings) {
   if (!settings || settings.image === undefined || !isPlaceholder(settings.image)) return settings;
+  const darkImage = settings.dark_mode_image && !isPlaceholder(settings.dark_mode_image);
+  if (settings.image === SAMPLE_IMAGE && !darkImage) return settings;
   const tidy = { ...settings, image: SAMPLE_IMAGE };
-  if (tidy.dark_mode_image && !isPlaceholder(tidy.dark_mode_image)) {
+  if (darkImage) {
     tidy.image = tidy.dark_mode_image;
     delete tidy.dark_mode_image;
   }

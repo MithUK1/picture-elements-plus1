@@ -34,11 +34,13 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.8.0";
+const VERSION = "0.8.1";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
 const ROOM_TYPE = "picture-elements-plus-room";
+// The Material Design "delete" icon, for HA's icon buttons.
+const DELETE_ICON = "M19,4H15.5L14.5,3H9.5L8.5,4H5V6H19M6,19A2,2 0 0,0 8,21H16A2,2 0 0,0 18,19V7H6V19Z";
 
 const BRIDGE_DESCRIPTION = "pictureElementsEditorBridge";
 const SNAP_STORAGE_KEY = "picture-elements-plus:snap";
@@ -2453,6 +2455,41 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._addStyles(rowEditor?.shadowRoot, HIDE_ADD_BUTTON);
     this._addStyles(rowEditor?.shadowRoot, OWN_ROW_STYLES);
     this._labelRows(rowEditor);
+    this._addDeleteButton();
+  }
+
+  // A bin next to the code button when one element is open, so it can go
+  // without heading back to the list first. Ctrl+Z brings it back.
+  async _addDeleteButton() {
+    const subEditor = this._subEditor;
+    if (!subEditor) return;
+    await subEditor.updateComplete;
+    const header = subEditor.shadowRoot?.querySelector(".header");
+    if (!header || header.querySelector(".pep-delete")) return;
+    const button = document.createElement("ha-icon-button");
+    button.className = "pep-delete";
+    button.label = "Delete element";
+    button.title = "Delete element";
+    button.path = DELETE_ICON;
+    // The header keeps the code button on the right; sit just before it.
+    const codeButton = header.lastElementChild;
+    if (codeButton && codeButton !== header.firstElementChild) {
+      codeButton.style.marginLeft = "0";
+      codeButton.before(button);
+      button.style.marginLeft = "auto";
+    } else {
+      header.append(button);
+    }
+    button.addEventListener("click", () => this._deleteOpenElement());
+  }
+
+  _deleteOpenElement() {
+    const index = this._bridge?.selectedIndex;
+    if (index === undefined || !this._pictureElements[index]) return;
+    const elements = this._pictureElements.filter((_, i) => i !== index);
+    this._closeElement();
+    this._setSelection([]);
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
   }
 
   // HA's list only knows its own element types. Ours get a proper name and a

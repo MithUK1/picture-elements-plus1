@@ -34,7 +34,7 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.8.1";
+const VERSION = "0.8.2";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
@@ -2113,8 +2113,12 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._onInnerConfigChanged = this._onInnerConfigChanged.bind(this);
     this._onBridgeChanged = () => this._updatePanels();
     this._onSelection = () => this._renderSelection();
+    // A tab in the preview was pressed. If an element is open, its form
+    // belongs to the old picture, so go back to the list first. Its changes
+    // are already in the config, so nothing is lost.
     this._onPictureRequest = (ev) => {
-      if (!this._editingOne) this._setPicture(ev.detail);
+      if (this._editingOne) this._closeElement();
+      this._setPicture(ev.detail);
     };
     this._onResize = (ev) => this._resizeElement(ev.detail);
     this._onDrop = (ev) => this._dropped(ev.detail);

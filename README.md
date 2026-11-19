@@ -335,6 +335,10 @@ occupancy, presence, door, window and opening sensors. To choose them
 yourself, fill in **Lights** or **Sensors that turn it red**. The editor
 tells you how many it's following.
 
+To save typing, the editor offers quick picks under the form: any light,
+switch or sensor whose icon sits inside the glow on the plan, plus the rest
+of the room's lights. Tap one to add it, or **Add all**.
+
 ```yaml
 - type: custom:picture-elements-plus-room
   area: kitchen

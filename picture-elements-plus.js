@@ -34,7 +34,7 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.7.1";
+const VERSION = "0.8.0";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
@@ -515,6 +515,44 @@ function roomEntities(hass, config) {
   return { lights, alerts };
 }
 
+// The elements on the picture being edited, so a room glow's form can see
+// which icons sit inside it. The card editor keeps this up to date.
+let editedElements = [];
+
+// Lights and sensors worth offering to a room glow: the ones whose icons
+// sit inside it on the plan, then the rest of its room's lights. Anything
+// it already lists is left out.
+function glowSuggestions(hass, config) {
+  const lights = new Set();
+  const alerts = new Set();
+  const offer = (entityId) => {
+    const domain = domainOf(entityId);
+    if (domain === "light" || domain === "switch") lights.add(entityId);
+    else if (domain === "binary_sensor") alerts.add(entityId);
+  };
+  const centre = positionOf(config);
+  const width = parsePercent(config.style?.width) ?? 20;
+  const height = parsePercent(config.style?.height) ?? 20;
+  if (centre) {
+    for (const element of editedElements) {
+      const at = positionOf(element);
+      if (!element.entity || !at) continue;
+      if (Math.abs(at.left - centre.left) <= width / 2 && Math.abs(at.top - centre.top) <= height / 2) {
+        offer(element.entity);
+      }
+    }
+  }
+  if (config.area && hass) {
+    for (const entityId of Object.keys(hass.states)) {
+      if (domainOf(entityId) !== "light" || hass.entities?.[entityId]?.hidden) continue;
+      if (areaOf(hass, entityId)?.area_id === config.area) lights.add(entityId);
+    }
+  }
+  const listed = (key) => new Set([].concat(config[key] || []));
+  const fresh = (ids, key) => [...ids].filter((id) => !listed(key).has(id));
+  return { lights: fresh(lights, "lights"), alerts: fresh(alerts, "alerts") };
+}
+
 // "alert", "lit" or "" for a room glow right now.
 function roomState(hass, config, entities = roomEntities(hass, config)) {
   const isOn = (id) => hass?.states[id]?.state === "on";
@@ -895,6 +933,52 @@ class PictureElementsPlusRoomEditor extends SimpleElementEditor {
         ? "Pick a room, or some lights and sensors, for it to follow. Resize it with the handle on its corner in the preview."
         : `Following ${count(lights.length, "light")} and ${count(alerts.length, "sensor")}. ` +
           "Resize it with the handle on its corner in the preview.";
+    this._renderSuggestions();
+  }
+
+  // Quick picks for the lights and sensors list, so the office light can
+  // be added with one tap when its icon is inside the glow.
+  _renderSuggestions() {
+    if (!this._suggestions) {
+      this._suggestions = document.createElement("div");
+      this._suggestions.className = "suggestions";
+      this._suggestions.style.cssText = "display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:8px 0 0";
+      this._suggestions.addEventListener("click", (ev) => {
+        const chip = ev.target.closest("button");
+        if (chip) this._addSuggested(chip.dataset.key, chip.dataset.ids.split(","));
+      });
+      this.append(this._suggestions);
+    }
+    const found = glowSuggestions(this._hass, this._config);
+    const name = (id) => this._hass.states[id]?.attributes.friendly_name || id;
+    const chip = (key, ids, text, icon) =>
+      `<button type="button" data-key="${key}" data-ids="${escapeHtml(ids.join(","))}" style="display:inline-flex;align-items:center;gap:4px;` +
+      "height:28px;padding:0 10px;border:1px solid var(--divider-color);border-radius:14px;background:none;" +
+      `color:var(--primary-text-color);font:inherit;font-size:13px;cursor:pointer"><ha-icon icon="${icon}" style="--mdc-icon-size:16px"></ha-icon>${escapeHtml(text)}</button>`;
+    let html = "";
+    for (const id of found.lights) html += chip("lights", [id], name(id), "mdi:lightbulb-outline");
+    for (const id of found.alerts) html += chip("alerts", [id], name(id), "mdi:motion-sensor");
+    const total = found.lights.length + found.alerts.length;
+    if (total > 1) {
+      html += chip("all", [...found.lights, ...found.alerts], `Add all ${total}`, "mdi:plus-circle-outline");
+    }
+    this._suggestions.hidden = !total;
+    this._suggestions.innerHTML = total
+      ? `<span style="font-size:12px;color:var(--secondary-text-color);width:100%">Tap to add what's in this glow:</span>${html}`
+      : "";
+  }
+
+  _addSuggested(key, ids) {
+    const config = { ...this._config };
+    for (const id of ids) {
+      const list = key === "all" ? (domainOf(id) === "binary_sensor" ? "alerts" : "lights") : key;
+      const current = [].concat(config[list] || []);
+      if (!current.includes(id)) config[list] = [...current, id];
+    }
+    this._config = config;
+    this._form.data = this.toData(config);
+    fireEvent(this, "config-changed", { config });
+    this._afterRender();
   }
 }
 
@@ -2485,6 +2569,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   // the card or its elements.
   _toInner(config) {
     const inner = tidyImage(pictureView(config, this._pictureIndex));
+    editedElements = inner.elements;
     if (inner.image === SAMPLE_IMAGE) inner.image = SAMPLE_PLAN;
     inner.elements = inner.elements.map((element) => {
       if (!OWN_ELEMENT_OPTIONS.some((key) => key in element)) return element;

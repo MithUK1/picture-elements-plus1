@@ -119,15 +119,17 @@ take those out when switching back.
 
 ## Using the editor
 
-### The Picture panel
+### Card settings
 
-The **Picture** panel at the top replaces Home Assistant's "Card options".
-You won't need it often, so it's folded away: click its header to open it.
-The header shows which picture is in use. It opens by itself on a new card
-that still shows the sample plan. (A separate tab next to Config would be
-neater, but Home Assistant owns those tabs and cards can't add to them.)
+The **Card settings** panel at the top holds the things you set once and
+rarely touch: the pictures, the plan style and the colour override. It
+replaces Home Assistant's "Card options". It's folded away, so click its
+header to open it. The header shows which picture is in use. It opens by
+itself on a new card that still shows the sample plan. (A separate tab next
+to Config would be neater, but Home Assistant owns those tabs and cards
+can't add to them.)
 
-It has:
+**Pictures** has:
 
 - **Title**, shown above the plan (optional)
 - **Show: Image or Camera**. With **Image**, upload a picture or pick one
@@ -149,6 +151,10 @@ The built-in card's rarer settings (`state_image`, `image_entity`,
 `state_filter`, `dark_mode_filter` and `theme`) aren't in the panel, as they
 mostly confuse things. They still work if you set them in the code editor,
 and the panel tells you when a card has any.
+
+Under the pictures, **Plan style** sets how wide the plan is compared to
+the card, and **Colour override** sets the colours of every state icon on
+the card. Each has a button to put it back to Home Assistant's normal.
 
 ### Adding things
 
@@ -249,12 +255,6 @@ Only elements positioned with `left` and `top` in percent can be dragged.
 That's a Home Assistant rule. Ones placed with `right`, `bottom` or pixels are
 left alone. Elements inside a conditional group are moved in the group's own
 editor.
-
-### Plan style and colour override
-
-**Plan style** sets how wide the plan is compared to the card. **Colour
-override** sets the colours of every state icon on the card. Each has a
-button to put it back to Home Assistant's normal.
 
 ## Options
 
@@ -360,7 +360,7 @@ One card can hold several images, each with its own elements: the floors
 of your house, separate rooms, the garden, a camera, whatever you like. The
 card shows their names as tabs.
 
-In the **Picture** panel, select **Add another image**. The card's current
+In **Card settings**, select **Add another image**. The card's current
 image becomes the first one and a new one is added with the sample plan,
 with its name box ready for you to type. Then:
 
@@ -499,5 +499,5 @@ the built-in card doesn't know. Check the YAML against the examples above.
 ## Releasing a new version
 
 Bump `VERSION` at the top of `picture-elements-plus.js`, merge to `main`,
-then publish a GitHub release with a matching tag (for example `v0.5.0`).
+then publish a GitHub release with a matching tag (for example `v0.6.0`).
 The Marketplace checks custom repositories for new releases every 48 hours.

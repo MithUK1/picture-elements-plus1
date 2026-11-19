@@ -20,7 +20,7 @@
  *   - a searchable entity picker in place of the "Add new element" dropdown:
  *     click an entity to add it, drag it onto the preview, or fill a room
  *     with all of its entities at once
- *   - a simpler Picture panel in place of HA's "Card options"
+ *   - a folded-away Card settings panel in place of HA's "Card options"
  *   - snapping and guide lines when dragging elements in the preview
  *   - shift-click to select several elements, then align, move or resize
  *     them together
@@ -34,7 +34,7 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.5.0";
+const VERSION = "0.6.0";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
@@ -1726,6 +1726,20 @@ const EDITOR_STYLES = `
   details[open] > summary.panel-header { padding-bottom: 4px; }
   .dark-form:empty, .dark-form[hidden] { display: none; }
   .panel-header .spacer { flex: 1; }
+  .sub-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0 0 8px;
+    font-size: 14px;
+    font-weight: 500;
+  }
+  .sub-header ha-icon { color: var(--primary-color); --mdc-icon-size: 20px; }
+  .sub {
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid var(--divider-color);
+  }
   .panel-body { padding: 8px 16px 12px; }
   .hint { font-size: 12px; color: var(--secondary-text-color); margin: 4px 0 0; }
   .hint + .chips { margin-top: 10px; }
@@ -2056,13 +2070,14 @@ class PictureElementsPlusEditor extends HTMLElement {
 
       <details class="panel pictures">
         <summary class="panel-header">
-          <ha-icon icon="mdi:image-outline"></ha-icon>
-          Picture
+          <ha-icon icon="mdi:cog-outline"></ha-icon>
+          Card settings
           <span class="summary"></span>
           <span class="spacer"></span>
           <ha-icon class="chevron" icon="mdi:chevron-down"></ha-icon>
         </summary>
         <div class="panel-body">
+          <h3 class="sub-header"><ha-icon icon="mdi:image-outline"></ha-icon>Pictures</h3>
           <div class="title-form"></div>
           <div class="chips picture-chips"></div>
           <div class="row picture-edit">
@@ -2082,6 +2097,30 @@ class PictureElementsPlusEditor extends HTMLElement {
           <div class="dark-form"></div>
           <p class="hint source-hint"></p>
           <p class="hint picture-hint"></p>
+
+          <section class="sub plan-style">
+            <h3 class="sub-header"><ha-icon icon="mdi:arrow-expand-horizontal"></ha-icon>Plan style</h3>
+            <div class="size-form"></div>
+            <p class="hint">Make the plan bigger to make the icons look smaller
+              on it, or smaller to make them look bigger. Over 100% the card
+              scrolls sideways. The preview shows the plan's size in pixels.</p>
+            <div class="chips">
+              <button class="chip reset-size">Back to normal size</button>
+            </div>
+          </section>
+
+          <section class="sub colours">
+            <h3 class="sub-header"><ha-icon icon="mdi:palette-outline"></ha-icon>Colour override</h3>
+            <div class="color-form"></div>
+            <p class="hint">The colours you pick here apply to every state icon
+              on this card: one for when it's off, and one for when it's on (lights,
+              open doors, people at home and so on). Leave them empty to use Home
+              Assistant's own colours. An element with its own colour in its
+              style keeps it.</p>
+            <div class="chips">
+              <button class="chip reset-colors">Use Home Assistant's colours</button>
+            </div>
+          </section>
         </div>
       </details>
 
@@ -2192,40 +2231,6 @@ class PictureElementsPlusEditor extends HTMLElement {
         </div>
       </div>
 
-      <div class="panel plan-style">
-        <div class="panel-header">
-          <ha-icon icon="mdi:arrow-expand-horizontal"></ha-icon>
-          Plan style
-        </div>
-        <div class="panel-body">
-          <div class="size-form"></div>
-          <p class="hint">Make the plan bigger to make the icons look smaller
-            on it, or smaller to make them look bigger. Over 100% the card
-            scrolls sideways. The preview shows the plan's size in pixels.</p>
-          <div class="chips">
-            <button class="chip reset-size">Back to normal size</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel colours">
-        <div class="panel-header">
-          <ha-icon icon="mdi:palette-outline"></ha-icon>
-          Colour override
-        </div>
-        <div class="panel-body">
-          <div class="color-form"></div>
-          <p class="hint">The colours you pick here apply to every state icon
-            on this card: one for when it's off, and one for when it's on (lights,
-            open doors, people at home and so on). Leave them empty to use Home
-            Assistant's own colours. An element with its own colour in its
-            style keeps it.</p>
-          <div class="chips">
-            <button class="chip reset-colors">Use Home Assistant's colours</button>
-          </div>
-        </div>
-      </div>
-
       <p class="tips">
         Click an entity to put it on the plan, or drag it to the spot you want.
         Drag elements in the preview to move them. With one selected, the
@@ -2239,8 +2244,6 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._picker = $(".picker");
     this._picturesPanel = $(".pictures");
     this._selectionPanel = $(".selection");
-    this._planStylePanel = $(".plan-style");
-    this._coloursPanel = $(".colours");
     this._elementSizePanel = $(".element-size");
     this._visibilityPanel = $(".visibility");
     this._movePicturePanel = $(".move-picture");
@@ -2339,7 +2342,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   }
 
   // Our own panels replace two parts of HA's editor: the "Add new element"
-  // dropdown, and the "Card options" form (the Picture panel does that
+  // dropdown, and the "Card options" form (the Card settings panel does that
   // job). If HA changes its markup they simply show up again.
   _tidyBuiltInEditor() {
     this._addStyles(this._inner?.shadowRoot, HIDE_CARD_OPTIONS);
@@ -2378,7 +2381,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   _updatePanels() {
     if (!this._picker) return;
     const editingOne = this._editingOne;
-    for (const panel of [this._picker, this._picturesPanel, this._planStylePanel, this._coloursPanel]) {
+    for (const panel of [this._picker, this._picturesPanel]) {
       panel.hidden = editingOne;
     }
     this._tips.hidden = !this._bridge;
@@ -2703,8 +2706,9 @@ class PictureElementsPlusEditor extends HTMLElement {
 
     this._titleForm = this._optionForm(".title-form", TITLE_SCHEMA, ["title"]);
 
-    // Closed out of the way normally; open on a new card that still has the
-    // sample plan, as picking your picture is the first job.
+    // These settings rarely change, so they're closed out of the way; open on
+    // a new card that still has the sample plan, as picking your picture is
+    // the first job.
     if (!this._picturesPanelSet) {
       this._picturesPanelSet = true;
       const view = pictureView(this._config, this._pictureIndex);

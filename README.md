@@ -6,12 +6,18 @@ your floor plan and a few extras the built-in card doesn't have.
 It's the built-in card underneath, so on your dashboard it looks and behaves
 the same, and any picture elements YAML you already have keeps working.
 
+![The sample floor plan a new card starts with](https://raw.githubusercontent.com/MithUK1/picture-elements-plus/main/docs/sample-floor-plan.png)
+
+*New cards start with this sample plan until you pick your own.*
+
 - [What it adds](#what-it-adds)
 - [Install](#install)
 - [Moving an existing card over](#moving-an-existing-card-over)
 - [Using the editor](#using-the-editor)
 - [Options](#options)
 - [Text on the plan](#text-on-the-plan)
+- [Room glow](#room-glow)
+- [Several floors in one card](#several-floors-in-one-card)
 - [Showing elements only sometimes](#showing-elements-only-sometimes)
 - [Full example](#full-example)
 - [Troubleshooting](#troubleshooting)
@@ -28,8 +34,14 @@ the same, and any picture elements YAML you already have keeps working.
   when they're on.
 - **Visibility per element.** Hide any element unless some conditions are
   met, for example only show someone's PC when they're home.
+- **Size per element.** Make any icon, badge or label bigger or smaller.
 - **Text.** Put labels like "Loft" anywhere on the plan and drag them about.
   Text can also be a template, like the current temperature.
+- **Room glow.** A shape over a room that glows when its lights are on and
+  turns red when there's motion or a door or window is open.
+- **Floors.** Ground floor, first floor and loft in one card, with tabs to
+  switch between them. A dot on a tab shows something is lit up or alerting
+  on that floor.
 
 **In the editor**
 
@@ -43,6 +55,11 @@ the same, and any picture elements YAML you already have keeps working.
   - a purple line when you're on a quarter or half-way line of the plan
   - the position you'll drop at, and the plan's size in pixels
 - **Arrow keys** to nudge the selected element.
+- **Select several** with Shift-click, then line them up, space them out,
+  resize them, move them together or move them to another floor.
+- **Fill a room.** Pick a room and add all of its entities in one go, laid
+  out in a neat grid.
+- **Undo and redo** with Ctrl+Z and Ctrl+Y.
 
 Dragging comes from Home Assistant itself, which added it to the picture
 elements editor in 2026.11. On older versions everything else works, but
@@ -98,9 +115,12 @@ take those out when switching back.
 
 ### Picking a floor plan
 
-A new card starts with a placeholder plan, and **Card options** is opened
-for you. Under **Image** you can upload a picture or pick one from your
-media. You can also use a camera there instead.
+A new card starts with the sample plan above, and **Card options** is
+opened for you. Under **Image** you can upload a picture or pick one from
+your media. You can also use a camera there instead.
+
+In YAML the sample plan shows as `image: sample-floor-plan`. It's built into
+the card, so nothing gets downloaded.
 
 ### Adding things
 
@@ -120,8 +140,21 @@ The **Add to plan** panel sits under the list of elements.
    more-info.
 3. Click the entity, or press Enter to add the top result.
 
-**Other** adds things that aren't tied to an entity: text, an icon, an
-image, an action button or a conditional group.
+**Other** adds things that aren't tied to an entity: a room glow, text, an
+icon, an image, an action button or a conditional group.
+
+### Filling a room
+
+Pick a room in the room list and an **Add all to ...** button appears. It
+adds everything listed (so the type filter and search still apply) in a neat
+grid:
+
+- inside the room's [room glow](#room-glow), if you've added one for it
+- otherwise in the middle of the plan, already selected, so you can drag
+  them into the room together
+
+Up to 40 at a time. Untick **Hide ones already on the plan** first if you
+want ones that are already placed too.
 
 Helpers and template entities are ordinary entities, so they show up like
 anything else. **Helpers** filters to just your helpers (input booleans,
@@ -152,15 +185,44 @@ bottom-left shows the plan's size in pixels.
 5%. Lining up with another element or a quarter line wins over the grid.
 The setting is remembered in your browser and isn't saved in the card.
 
+### Selecting several
+
+**Shift-click** (or Ctrl-click) elements in the preview to pick them. Each
+one gets a blue box and a **Picked** panel appears under the element list:
+
+- **Line up** left, centre, right, top, middle or bottom, and **space evenly**
+  across or down (with three or more)
+- **Size** them all at once
+- **Move to** another floor
+- **Remove from plan**
+
+Drag any picked element and the rest come with it. The arrow keys move them
+all too. Press **Escape** or **Clear** to let go, or click something that
+isn't picked.
+
+### Undo
+
+**Ctrl+Z** undoes the last change made in the editor (moves, adding,
+lining up, removing, everything) and **Ctrl+Y** or **Ctrl+Shift+Z** redoes
+it. It works while the card's editor is open, and not while you're typing in
+a box.
+
+### Element size
+
+Open an element and use the **Size** panel under its settings. 100% is
+normal. Text has its own size setting, and room glows are sized by their
+width and height.
+
 Only elements positioned with `left` and `top` in percent can be dragged.
 That's a Home Assistant rule. Ones placed with `right`, `bottom` or pixels are
 left alone. Elements inside a conditional group are moved in the group's own
 editor.
 
-### Plan style
+### Plan style and colour override
 
-The **Plan style** panel holds the card-wide options described below. **Back
-to HA's normal size and colours** clears them all.
+**Plan style** sets how wide the plan is compared to the card. **Colour
+override** sets the colours of every state icon on the card. Each has a
+button to put it back to Home Assistant's normal.
 
 ## Options
 
@@ -173,6 +235,14 @@ takes, plus:
 | `plan_size` | Width of the plan as a percentage of the card. Below 100 the plan is centred and the icons look bigger on it. Above 100 it's bigger than the card, the icons look smaller on it, and the card scrolls sideways. | `plan_size: 150` |
 | `icon_color` | Colour of every icon on the plan. A theme colour name or any CSS colour. | `icon_color: blue-grey` |
 | `active_color` | Colour of icons when their entity is on, open, home and so on. This replaces HA's own colours, including the light's colour. | `active_color: amber` |
+| `floors` | Several floors in one card. See [below](#several-floors-in-one-card). | |
+
+And on any element:
+
+| Option | What it does | Example |
+| --- | --- | --- |
+| `scale` | Size as a percentage of normal. Grows from the element's centre. Not for text or room glows. | `scale: 150` |
+| `visibility` | Only show it when these conditions are true. See [below](#showing-elements-only-sometimes). | |
 
 Theme colour names are the ones in HA's colour picker: `primary`, `accent`,
 `red`, `pink`, `purple`, `deep-purple`, `indigo`, `blue`, `light-blue`,
@@ -212,6 +282,85 @@ itself:
 ```
 
 Text does nothing when tapped on the dashboard.
+
+## Room glow
+
+A room glow is a shape you put over a room. It:
+
+- glows when any of the room's lights are on, in the lights' own colour
+  (or a colour you pick)
+- turns red and pulses when there's motion, or a door or window is open
+- does nothing when tapped, so icons on top of it still work
+- always sits underneath icons and labels
+
+Add one with **Other > Room glow** (if you've picked a room in the room list,
+it's set to that room). Drag it into place, then drag the round handle on
+its bottom-right corner to resize it. You can also type the width and height
+in its editor.
+
+Pick a **Room** and it follows that room's lights, and its motion,
+occupancy, presence, door, window and opening sensors. To choose them
+yourself, fill in **Lights** or **Sensors that turn it red**. The editor
+tells you how many it's following.
+
+```yaml
+- type: custom:picture-elements-plus-room
+  area: kitchen
+  color: amber          # optional, otherwise the lights' own colour
+  alert_color: red      # optional
+  lights:               # optional, instead of the room's lights
+    - light.kitchen_light_1
+  alerts:               # optional, instead of the room's sensors
+    - binary_sensor.back_door
+  style:
+    left: 20%           # the middle of the room
+    top: 30%
+    width: 28%
+    height: 35%
+```
+
+While you're editing, room glows show a dashed outline and the room's name so
+you can find them.
+
+## Several floors in one card
+
+Under the element list, the **Floors** panel has **Add floor**. The card's
+current plan becomes the first floor and a new floor is added with the sample
+plan. Then:
+
+- click a floor to edit it (or click its tab in the preview)
+- pick its image under **Card options > Image**, like any card
+- rename it, move it earlier or later, or remove it
+- move an element to another floor from its editor, or several at once
+  with [Select several](#selecting-several)
+
+On the dashboard the card shows the floors as tabs in its top-right corner.
+A floor with a room glow that's lit up gets an amber dot on its tab, and a red
+dot if something's alerting there.
+
+In YAML, the floors go in a `floors` list instead of `image` and `elements`
+at the top. Everything else (plan size, colours, title) is shared by all of
+them.
+
+```yaml
+type: custom:picture-elements-plus
+plan_size: 120
+floors:
+  - name: Ground floor
+    image: /local/jpg/Newton_G.png
+    elements:
+      - type: state-icon
+        entity: light.kitchen_light_1
+        style: { left: 20%, top: 35% }
+  - name: First floor
+    image: /local/jpg/Newton_1.png
+    elements: []
+  - name: Loft
+    image: /local/jpg/Newton_2.png
+    elements: []
+```
+
+Removing floors until only one is left turns it back into a normal card.
 
 ## Showing elements only sometimes
 
@@ -264,9 +413,13 @@ elements:
   - type: state-label
     entity: sensor.fridge_freezer_fridge_temp
     style: { left: 38%, top: 90% }
+  - type: custom:picture-elements-plus-room
+    area: kitchen
+    style: { left: 20%, top: 30%, width: 28%, height: 35% }
   - type: state-icon
     entity: binary_sensor.mith_pc
     icon: mdi:desktop-classic
+    scale: 125
     visibility:
       - condition: state
         entity: person.chris
@@ -289,6 +442,14 @@ module yourself.
 **Dragging doesn't work.** You need Home Assistant 2026.11 or later, and the
 element has to be positioned with `left`/`top` percentages.
 
+**Ctrl+Z does nothing.** Click on an empty part of the editor first, so
+you're not typing in a box. Undo only covers changes made since the editor
+was opened.
+
+**A room glow doesn't light up.** Open it and check the line under the form
+says it's following some lights. If it says 0, the lights aren't assigned to
+that room in Home Assistant, so pick them under **Lights** instead.
+
 **The old "Add new element" button is back.** A Home Assistant update has
 changed how its editor is built. It still works, it's just untidy. Please
 open an issue.
@@ -299,5 +460,5 @@ the built-in card doesn't know. Check the YAML against the examples above.
 ## Releasing a new version
 
 Bump `VERSION` at the top of `picture-elements-plus.js`, merge to `main`,
-then publish a GitHub release with a matching tag (for example `v0.2.0`).
+then publish a GitHub release with a matching tag (for example `v0.3.0`).
 The Marketplace checks custom repositories for new releases every 48 hours.

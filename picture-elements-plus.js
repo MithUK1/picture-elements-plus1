@@ -34,7 +34,7 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.7.0";
+const VERSION = "0.7.1";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
@@ -2416,6 +2416,11 @@ class PictureElementsPlusEditor extends HTMLElement {
     }
     if (element?.type === `custom:${TEXT_TYPE}`) {
       return { name: "Text", detail: element.text || "" };
+    }
+    // HA names its own types itself, but would show the sample plan as a
+    // screenful of image code.
+    if (element?.type === "image" && !element.title && isPlaceholder(element.image)) {
+      return { name: "Image", detail: "Sample plan" };
     }
     return undefined;
   }

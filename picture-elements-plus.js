@@ -13,11 +13,14 @@
  *   - a text element you can drag around (it also renders templates)
  *   - a room glow element that lights up with the room's lights and turns
  *     red on motion or an open door
- *   - several floors in one card, with tabs to switch between them
+ *   - several images in one card (floors, rooms, anything), with tabs to
+ *     switch between them
  *
  * And in the editor:
- *   - a searchable entity picker in place of the "Add new element" dropdown,
- *     which can also fill a room with all of its entities at once
+ *   - a searchable entity picker in place of the "Add new element" dropdown:
+ *     click an entity to add it, drag it onto the preview, or fill a room
+ *     with all of its entities at once
+ *   - a simpler Picture panel in place of HA's "Card options"
  *   - snapping and guide lines when dragging elements in the preview
  *   - shift-click to select several elements, then align, move or resize
  *     them together
@@ -31,7 +34,7 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.3.0";
+const VERSION = "0.4.0";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
@@ -47,14 +50,14 @@ const SAMPLE_IMAGE = "sample-floor-plan";
 
 // Card options we handle ourselves. They're taken off the config before it
 // reaches HA's card and editor, which reject keys they don't know.
-const OWN_OPTIONS = ["plan_size", "icon_color", "active_color", "floors"];
+const OWN_OPTIONS = ["plan_size", "icon_color", "active_color", "pictures", "floors"];
 
 // The same for element options.
 const OWN_ELEMENT_OPTIONS = ["visibility", "scale"];
 
-// Card options that belong to a floor rather than the whole card, when the
-// card has several floors.
-const FLOOR_KEYS = [
+// Card options that belong to a picture rather than the whole card, when the
+// card has several pictures.
+const PICTURE_KEYS = [
   "image",
   "dark_mode_image",
   "image_entity",
@@ -204,14 +207,14 @@ function findBridge(config) {
 }
 
 // The card and the editor share a little state while editing: which
-// elements are selected, which floor is being edited, and the plan's shape.
+// elements are selected, which picture is being edited, and the plan's shape.
 // It's keyed by HA's bridge, which both of them already have.
 const editorLinks = new WeakMap();
 function editorLink(bridge) {
   if (!bridge) return undefined;
   let link = editorLinks.get(bridge);
   if (!link) {
-    link = { selection: new Set(), floor: 0, planAspect: 1.5, events: new EventTarget() };
+    link = { selection: new Set(), picture: 0, planAspect: 1.5, events: new EventTarget() };
     editorLinks.set(bridge, link);
   }
   return link;
@@ -267,49 +270,52 @@ function canScale(element) {
   return ![`custom:${TEXT_TYPE}`, `custom:${ROOM_TYPE}`, "conditional"].includes(element?.type);
 }
 
-/* ---- floors ---- */
+/* ---- pictures ---- */
 
-function floorsOf(config) {
-  return Array.isArray(config?.floors) && config.floors.length ? config.floors : undefined;
+// Version 0.3 called them floors. Those cards still work, and the editor
+// renames the key the next time it saves.
+function picturesOf(config) {
+  const list = config?.pictures ?? config?.floors;
+  return Array.isArray(list) && list.length ? list : undefined;
 }
 
-function floorCount(config) {
-  return floorsOf(config)?.length || 1;
+function pictureCount(config) {
+  return picturesOf(config)?.length || 1;
 }
 
-// One floor of the card as a plain picture-elements config: the card-wide
-// options with that floor's image and elements on top. Our own options are
+// One picture of the card as a plain picture-elements config: the card-wide
+// options with that picture's image and elements on top. Our own options are
 // left out. Spreading keeps the bridge symbol.
-function floorView(config, index) {
+function pictureView(config, index) {
   const view = { ...config };
   for (const key of OWN_OPTIONS) delete view[key];
-  const floors = floorsOf(config);
-  if (floors) {
-    const { name, ...floor } = floors[clamp(index, 0, floors.length - 1)];
-    Object.assign(view, floor);
+  const pictures = picturesOf(config);
+  if (pictures) {
+    const { name, ...picture } = pictures[clamp(index, 0, pictures.length - 1)];
+    Object.assign(view, picture);
   }
   if (!Array.isArray(view.elements)) view.elements = [];
   return view;
 }
 
 function elementsOf(config, index) {
-  const floors = floorsOf(config);
-  const elements = floors ? floors[clamp(index, 0, floors.length - 1)].elements : config?.elements;
+  const pictures = picturesOf(config);
+  const elements = pictures ? pictures[clamp(index, 0, pictures.length - 1)].elements : config?.elements;
   return elements || [];
 }
 
 function withElements(config, index, elements) {
-  const floors = floorsOf(config);
-  if (!floors) return { ...config, elements };
+  const pictures = picturesOf(config);
+  if (!pictures) return { ...config, elements };
   return {
     ...config,
-    floors: floors.map((floor, i) => (i === index ? { ...floor, elements } : floor)),
+    pictures: pictures.map((picture, i) => (i === index ? { ...picture, elements } : picture)),
   };
 }
 
 function allElements(config) {
-  const floors = floorsOf(config);
-  return floors ? floors.flatMap((floor) => floor.elements || []) : config?.elements || [];
+  const pictures = picturesOf(config);
+  return pictures ? pictures.flatMap((picture) => picture.elements || []) : config?.elements || [];
 }
 
 /* ---- snapping ---- */
@@ -395,6 +401,21 @@ function gridPositions(count, box, aspect) {
     });
   }
   return positions;
+}
+
+/* ---- dragging from the picker onto the preview ---- */
+
+// Our own type, so the preview only reacts to drags that came from the picker.
+const DRAG_TYPE = "application/x-picture-elements-plus";
+
+function startDrag(ev, data) {
+  ev.dataTransfer.setData(DRAG_TYPE, JSON.stringify(data));
+  ev.dataTransfer.setData("text/plain", data.entity || data.other);
+  ev.dataTransfer.effectAllowed = "copy";
+}
+
+function isOurDrag(ev) {
+  return [...(ev.dataTransfer?.types || [])].includes(DRAG_TYPE);
 }
 
 /* ---- misc ---- */
@@ -853,7 +874,7 @@ const CARD_STYLES = `
   .wrapper { position: relative; height: 100%; overflow-x: auto; }
   hui-picture-elements-card { display: block; margin: 0 auto; }
 
-  .floors {
+  .pictures {
     position: absolute;
     top: 8px;
     right: 8px;
@@ -865,8 +886,8 @@ const CARD_STYLES = `
     background: var(--card-background-color, #fff);
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
   }
-  .floors[hidden] { display: none; }
-  .floors button {
+  .pictures[hidden] { display: none; }
+  .pictures button {
     position: relative;
     height: 28px;
     padding: 0 12px;
@@ -877,12 +898,12 @@ const CARD_STYLES = `
     font: 500 13px var(--ha-font-family-body, Roboto, sans-serif);
     cursor: pointer;
   }
-  .floors button[aria-selected="true"] {
+  .pictures button[aria-selected="true"] {
     background: var(--primary-color);
     color: var(--text-primary-color, #fff);
   }
-  /* A dot when something on another floor is lit up or alerting. */
-  .floors button.lit::after, .floors button.alert::after {
+  /* A dot when something on another picture is lit up or alerting. */
+  .pictures button.lit::after, .pictures button.alert::after {
     content: "";
     position: absolute;
     top: 4px;
@@ -892,7 +913,7 @@ const CARD_STYLES = `
     border-radius: 50%;
     background: var(--amber-color, #ffc107);
   }
-  .floors button.alert::after { background: var(--red-color, #f44336); }
+  .pictures button.alert::after { background: var(--red-color, #f44336); }
 
   .overlay {
     position: absolute;
@@ -995,12 +1016,12 @@ class PictureElementsPlusCard extends HTMLElement {
   constructor() {
     super();
     this._preview = false;
-    this._floorIndex = 0;
+    this._pictureIndex = 0;
     this.attachShadow({ mode: "open" });
     this.shadowRoot.innerHTML = `
       <style>${CARD_STYLES}</style>
       <div class="wrapper">
-        <div class="floors" role="tablist" hidden></div>
+        <div class="pictures" role="tablist" hidden></div>
         <div class="overlay">
           ${PLAN_GUIDES.map((p) => `<div class="line vertical quarter" style="left:${p}%"></div>`).join("")}
           ${PLAN_GUIDES.map((p) => `<div class="line horizontal quarter" style="top:${p}%"></div>`).join("")}
@@ -1015,7 +1036,7 @@ class PictureElementsPlusCard extends HTMLElement {
     `;
     const $ = (selector) => this.shadowRoot.querySelector(selector);
     this._wrapper = $(".wrapper");
-    this._floorTabs = $(".floors");
+    this._pictureTabs = $(".pictures");
     this._overlay = $(".overlay");
     this._crossV = $(".cross.vertical");
     this._crossH = $(".cross.horizontal");
@@ -1027,7 +1048,7 @@ class PictureElementsPlusCard extends HTMLElement {
 
     this._onBridgeChanged = () => this._scheduleOverlay();
     this._onSelection = () => this._scheduleOverlay();
-    this._onFloor = () => this._applyConfig();
+    this._onPicture = () => this._applyConfig();
 
     // Capture phase, so we see which element was pressed before HA's drag
     // handler takes the pointer, and can keep shift-clicks away from it.
@@ -1045,9 +1066,11 @@ class PictureElementsPlusCard extends HTMLElement {
       this._scheduleOverlay();
     });
 
-    this._floorTabs.addEventListener("click", (ev) => {
+    this._setUpDropping();
+
+    this._pictureTabs.addEventListener("click", (ev) => {
       const button = ev.target.closest("button");
-      if (button) this._showFloor(Number(button.dataset.floor));
+      if (button) this._showPicture(Number(button.dataset.picture));
     });
 
     this._setUpHandle();
@@ -1065,13 +1088,14 @@ class PictureElementsPlusCard extends HTMLElement {
     const hasImage = (c) =>
       (c.image || c.image_entity || c.camera_image || c.state_image) &&
       !(c.state_image && !c.entity);
-    if (config.floors !== undefined) {
-      if (!Array.isArray(config.floors) || !config.floors.length) {
-        throw new Error("floors needs to be a list of floors");
+    const pictures = config.pictures ?? config.floors;
+    if (pictures !== undefined) {
+      if (!Array.isArray(pictures) || !pictures.length) {
+        throw new Error("pictures needs to be a list of pictures");
       }
-      config.floors.forEach((floor, i) => {
-        if (!hasImage({ ...config, ...floor })) throw new Error(`Image required on floor ${i + 1}`);
-        if (!Array.isArray(floor.elements)) throw new Error(`Elements required on floor ${i + 1}`);
+      pictures.forEach((picture, i) => {
+        if (!hasImage({ ...config, ...picture })) throw new Error(`Image required on picture ${i + 1}`);
+        if (!Array.isArray(picture.elements)) throw new Error(`Elements required on picture ${i + 1}`);
       });
     } else {
       if (!hasImage(config)) throw new Error("Image required");
@@ -1095,7 +1119,7 @@ class PictureElementsPlusCard extends HTMLElement {
     const first = !this._hass;
     this._hass = hass;
     if (this._card) this._card.hass = hass;
-    this._updateFloorDots();
+    this._updatePictureDots();
     // State badges render after the first hass, so colour them then.
     if (first) this._scheduleStyling();
   }
@@ -1148,31 +1172,31 @@ class PictureElementsPlusCard extends HTMLElement {
     return editorLink(this._bridge);
   }
 
-  // While editing, the floor comes from the editor. On the dashboard it's
+  // While editing, the picture comes from the editor. On the dashboard it's
   // whichever tab was picked last.
-  get _floor() {
-    const index = this._preview && this._link ? this._link.floor : this._floorIndex;
-    return clamp(index, 0, floorCount(this._config) - 1);
+  get _picture() {
+    const index = this._preview && this._link ? this._link.picture : this._pictureIndex;
+    return clamp(index, 0, pictureCount(this._config) - 1);
   }
 
   get _elements() {
-    return elementsOf(this._config, this._floor);
+    return elementsOf(this._config, this._picture);
   }
 
-  _showFloor(index) {
+  _showPicture(index) {
     if (this._preview && this._link) {
       // Let the editor switch, so the element list follows.
-      this._link.events.dispatchEvent(new CustomEvent("floor-request", { detail: index }));
+      this._link.events.dispatchEvent(new CustomEvent("picture-request", { detail: index }));
       return;
     }
-    this._floorIndex = index;
+    this._pictureIndex = index;
     this._applyConfig();
   }
 
-  // What HA's card gets: the current floor, our own options removed, and
+  // What HA's card gets: the current picture, our own options removed, and
   // elements with visibility conditions wrapped in a conditional element.
   _innerConfig() {
-    const config = floorView(this._config, this._floor);
+    const config = pictureView(this._config, this._picture);
     config.type = "picture-elements";
     if (config.image === SAMPLE_IMAGE) config.image = SAMPLE_PLAN;
     config.elements = config.elements.map((element) => {
@@ -1199,7 +1223,7 @@ class PictureElementsPlusCard extends HTMLElement {
       }
       this._error.textContent = err.message;
     }
-    this._renderFloorTabs();
+    this._renderPictureTabs();
     this._observe();
     this._scheduleStyling();
     this._scheduleOverlay();
@@ -1220,7 +1244,7 @@ class PictureElementsPlusCard extends HTMLElement {
     const link = editorLink(bridge);
     bridge[method]("changed", this._onBridgeChanged);
     link.events[method]("selection", this._onSelection);
-    link.events[method]("floor", this._onFloor);
+    link.events[method]("picture", this._onPicture);
   }
 
   // The positioned box inside HA's card that left/top percentages refer to.
@@ -1228,7 +1252,7 @@ class PictureElementsPlusCard extends HTMLElement {
     return this._card?.shadowRoot?.getElementById("root");
   }
 
-  // Top-level elements in the same order as the floor's elements. HA renders
+  // Top-level elements in the same order as the picture's elements. HA renders
   // the background image first, then one node per element.
   get _renderedElements() {
     const root = this._root;
@@ -1306,6 +1330,54 @@ class PictureElementsPlusCard extends HTMLElement {
     }
   }
 
+  /* ---- dropping things from the picker ---- */
+
+  _setUpDropping() {
+    const accepts = (ev) => this._preview && this._bridge?.active && this._link && isOurDrag(ev);
+    const pointFrom = (ev) => {
+      const root = this._root;
+      if (!root) return undefined;
+      const rect = root.getBoundingClientRect();
+      const left = ((ev.clientX - rect.left) / rect.width) * 100;
+      const top = ((ev.clientY - rect.top) / rect.height) * 100;
+      if (left < 0 || left > 100 || top < 0 || top > 100) return undefined;
+      return snapPosition(left, top, this._elements, new Set(), loadSnapSetting());
+    };
+
+    this._wrapper.addEventListener("dragover", (ev) => {
+      if (!accepts(ev)) return;
+      const point = pointFrom(ev);
+      this._dropPoint = point;
+      if (point) {
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "copy";
+      }
+      this._scheduleOverlay();
+    }, true);
+    this._wrapper.addEventListener("dragleave", (ev) => {
+      if (this._wrapper.contains(ev.relatedTarget)) return;
+      this._dropPoint = undefined;
+      this._scheduleOverlay();
+    }, true);
+    this._wrapper.addEventListener("drop", (ev) => {
+      const point = accepts(ev) && pointFrom(ev);
+      this._dropPoint = undefined;
+      this._scheduleOverlay();
+      if (!point) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      let data;
+      try {
+        data = JSON.parse(ev.dataTransfer.getData(DRAG_TYPE));
+      } catch (err) {
+        return;
+      }
+      this._link.events.dispatchEvent(new CustomEvent("drop", {
+        detail: { data, left: roundTo(point.left, 0.1), top: roundTo(point.top, 0.1) },
+      }));
+    }, true);
+  }
+
   /* ---- resizing room glows ---- */
 
   _setUpHandle() {
@@ -1345,30 +1417,30 @@ class PictureElementsPlusCard extends HTMLElement {
     this._handle.addEventListener("pointercancel", finish);
   }
 
-  /* ---- floor tabs ---- */
+  /* ---- picture tabs ---- */
 
-  _renderFloorTabs() {
-    const floors = floorsOf(this._config);
-    this._floorTabs.hidden = !floors || floors.length < 2;
-    if (this._floorTabs.hidden) return;
-    const current = this._floor;
-    this._floorTabs.innerHTML = floors
-      .map((floor, i) => `
-        <button role="tab" data-floor="${i}" aria-selected="${i === current}">
-          ${escapeHtml(floor.name || `Floor ${i + 1}`)}
+  _renderPictureTabs() {
+    const pictures = picturesOf(this._config);
+    this._pictureTabs.hidden = !pictures || pictures.length < 2;
+    if (this._pictureTabs.hidden) return;
+    const current = this._picture;
+    this._pictureTabs.innerHTML = pictures
+      .map((picture, i) => `
+        <button role="tab" data-picture="${i}" aria-selected="${i === current}">
+          ${escapeHtml(picture.name || `Image ${i + 1}`)}
         </button>`)
       .join("");
-    this._updateFloorDots();
+    this._updatePictureDots();
   }
 
-  _updateFloorDots() {
-    const floors = floorsOf(this._config);
-    if (!floors || !this._hass || this._floorTabs.hidden) return;
-    const buttons = this._floorTabs.querySelectorAll("button");
-    floors.forEach((floor, i) => {
+  _updatePictureDots() {
+    const pictures = picturesOf(this._config);
+    if (!pictures || !this._hass || this._pictureTabs.hidden) return;
+    const buttons = this._pictureTabs.querySelectorAll("button");
+    pictures.forEach((picture, i) => {
       let state = "";
-      if (i !== this._floor) {
-        for (const element of floor.elements || []) {
+      if (i !== this._picture) {
+        for (const element of picture.elements || []) {
           if (element.type !== `custom:${ROOM_TYPE}`) continue;
           const roomNow = roomState(this._hass, element);
           if (roomNow === "alert") { state = "alert"; break; }
@@ -1483,6 +1555,22 @@ class PictureElementsPlusCard extends HTMLElement {
     const elements = this._elements;
     const rendered = this._renderedElements;
     const selection = this._link?.selection || new Set();
+
+    // Something from the picker is being dragged over the plan.
+    const drop = this._dropPoint;
+    if (drop) {
+      for (const line of this._quarters) line.classList.add("shown");
+      this._crossV.style.left = `${drop.left}%`;
+      this._crossH.style.top = `${drop.top}%`;
+      this._crossV.className = `line vertical cross shown ${drop.leftKind || ""}`;
+      this._crossH.className = `line horizontal cross shown ${drop.topKind || ""}`;
+      this._positionChip.style.display = "";
+      this._positionChip.textContent =
+        `drop at left ${roundTo(drop.left, 0.1)}%  \u00b7  top ${roundTo(drop.top, 0.1)}%`;
+      this._handle.classList.remove("shown");
+      return;
+    }
+
     const dragging = root.classList.contains("dragging");
     const index = dragging ? this._dragIndex : bridge.selectedIndex;
     const node = index !== undefined ? rendered[index] : undefined;
@@ -1721,6 +1809,8 @@ const EDITOR_STYLES = `
     color: var(--secondary-text-color);
   }
   .result .area { flex: none; max-width: 30%; text-align: right; }
+  .result .add { flex: none; color: var(--primary-color); }
+  .result[draggable="true"] { cursor: grab; }
   .result .on-plan {
     font-size: 11px;
     padding: 1px 6px;
@@ -1751,9 +1841,11 @@ const EDITOR_STYLES = `
   }
 `;
 
-// Hides the built-in "Add new element" dropdown, since the picker replaces
-// it. If HA changes its markup the old button simply shows up again.
 const HIDE_ADD_BUTTON = `ha-dropdown, ha-button-menu, ha-md-button-menu { display: none !important; }`;
+
+// Only the top-level form in HA's editor: the one for a single element sits
+// inside another shadow root and isn't touched.
+const HIDE_CARD_OPTIONS = `ha-form { display: none !important; }`;
 
 const PLAN_SIZE_SCHEMA = [
   {
@@ -1767,6 +1859,38 @@ const COLOR_SCHEMA = [
   { name: "active_color", selector: { ui_color: {} } },
 ];
 
+const TITLE_SCHEMA = [{ name: "title", selector: { text: {} } }];
+
+const MEDIA_SELECTOR = { media: { accept: ["image/*"], image_upload: true, hide_content_type: true } };
+
+const IMAGE_SCHEMA = [
+  { name: "image", selector: MEDIA_SELECTOR },
+  { name: "dark_mode_image", selector: MEDIA_SELECTOR },
+];
+
+const CAMERA_SCHEMA = [
+  { name: "camera_image", selector: { entity: { domain: "camera" } } },
+  {
+    name: "camera_view",
+    selector: {
+      select: {
+        mode: "dropdown",
+        options: [
+          { value: "auto", label: "Snapshot, refreshed every few seconds" },
+          { value: "live", label: "Live stream" },
+        ],
+      },
+    },
+  },
+];
+
+const SOURCE_LABELS = {
+  image: "Image",
+  dark_mode_image: "Different image in dark mode (optional)",
+  camera_image: "Camera",
+  camera_view: "Show",
+};
+
 const ELEMENT_SIZE_SCHEMA = [
   {
     name: "scale",
@@ -1775,6 +1899,7 @@ const ELEMENT_SIZE_SCHEMA = [
 ];
 
 const FORM_LABELS = {
+  title: "Title (optional)",
   plan_size: "Plan size (% of card width)",
   icon_color: "Icon colour",
   active_color: "Icon colour when on",
@@ -1805,7 +1930,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._hideUsed = true;
     this._showAll = false;
     this._snap = loadSnapSetting();
-    this._floorIndex = 0;
+    this._pictureIndex = 0;
     this._undo = [];
     this._redo = [];
     // Only used when there's no bridge (HA before 2026.11).
@@ -1822,10 +1947,11 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._onInnerConfigChanged = this._onInnerConfigChanged.bind(this);
     this._onBridgeChanged = () => this._updatePanels();
     this._onSelection = () => this._renderSelection();
-    this._onFloorRequest = (ev) => {
-      if (!this._editingOne) this._setFloor(ev.detail);
+    this._onPictureRequest = (ev) => {
+      if (!this._editingOne) this._setPicture(ev.detail);
     };
     this._onResize = (ev) => this._resizeElement(ev.detail);
+    this._onDrop = (ev) => this._dropped(ev.detail);
   }
 
   set hass(hass) {
@@ -1844,12 +1970,16 @@ class PictureElementsPlusEditor extends HTMLElement {
   }
 
   setConfig(config) {
+    if (config.floors && !config.pictures) {
+      const { floors, ...rest } = config;
+      config = { ...rest, pictures: floors };
+    }
     this._config = config;
-    this._floorIndex = clamp(this._floorIndex, 0, floorCount(config) - 1);
+    this._pictureIndex = clamp(this._pictureIndex, 0, pictureCount(config) - 1);
     this._captureBridge(config);
     this._inner?.setConfig(this._toInner(config));
     this._renderOptionForms();
-    this._renderFloors();
+    this._renderPictures();
     this._renderPicker();
     this._updatePanels();
   }
@@ -1870,6 +2000,31 @@ class PictureElementsPlusEditor extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this.shadowRoot.innerHTML = `
       <style>${EDITOR_STYLES}</style>
+
+      <div class="panel pictures">
+        <div class="panel-header">
+          <ha-icon icon="mdi:image-outline"></ha-icon>
+          Picture
+        </div>
+        <div class="panel-body">
+          <div class="title-form"></div>
+          <div class="chips picture-chips"></div>
+          <div class="row picture-edit">
+            <input class="text-input picture-name" placeholder="Name shown on its tab" aria-label="Name shown on its tab">
+            <button class="chip icon-only picture-earlier" title="Move this image earlier"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+            <button class="chip icon-only picture-later" title="Move this image later"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+            <button class="chip danger picture-remove">Remove image</button>
+          </div>
+          <div class="row">
+            <span class="label">Show</span>
+            <div class="chips source"></div>
+          </div>
+          <div class="source-form"></div>
+          <p class="hint source-hint"></p>
+          <p class="hint picture-hint"></p>
+        </div>
+      </div>
+
       <div class="inner"></div>
 
       <div class="panel element-size" hidden>
@@ -1896,31 +2051,14 @@ class PictureElementsPlusEditor extends HTMLElement {
         </div>
       </div>
 
-      <div class="panel move-floor" hidden>
+      <div class="panel move-picture" hidden>
         <div class="panel-header">
           <ha-icon icon="mdi:swap-vertical"></ha-icon>
-          Move to another floor
+          Move to another image
         </div>
         <div class="panel-body">
-          <div class="chips move-floor-chips"></div>
+          <div class="chips move-picture-chips"></div>
           <p class="hint">It keeps its position on the plan.</p>
-        </div>
-      </div>
-
-      <div class="panel floors">
-        <div class="panel-header">
-          <ha-icon icon="mdi:layers-outline"></ha-icon>
-          Floors
-        </div>
-        <div class="panel-body">
-          <div class="chips floor-chips"></div>
-          <div class="row floor-edit">
-            <input class="text-input floor-name" placeholder="Floor name" aria-label="Floor name">
-            <button class="chip icon-only floor-earlier" title="Move this floor earlier"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
-            <button class="chip icon-only floor-later" title="Move this floor later"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
-            <button class="chip danger floor-remove">Remove floor</button>
-          </div>
-          <p class="hint floor-hint"></p>
         </div>
       </div>
 
@@ -1940,9 +2078,9 @@ class PictureElementsPlusEditor extends HTMLElement {
             <span class="label">Size</span>
             <div class="chips selection-size"></div>
           </div>
-          <div class="row selection-floor-row">
+          <div class="row selection-picture-row">
             <span class="label">Move to</span>
-            <div class="chips selection-floor"></div>
+            <div class="chips selection-picture"></div>
           </div>
           <div class="row">
             <button class="chip danger selection-remove">Remove from plan</button>
@@ -2029,6 +2167,7 @@ class PictureElementsPlusEditor extends HTMLElement {
       </div>
 
       <p class="tips">
+        Click an entity to put it on the plan, or drag it to the spot you want.
         Drag elements in the preview to move them. With one selected, the
         arrow keys nudge it (<kbd>Shift</kbd> for bigger steps, <kbd>Alt</kbd>
         for 0.1%). <kbd>Shift</kbd>-click to pick several.
@@ -2038,13 +2177,13 @@ class PictureElementsPlusEditor extends HTMLElement {
 
     const $ = (selector) => this.shadowRoot.querySelector(selector);
     this._picker = $(".picker");
-    this._floorsPanel = $(".floors");
+    this._picturesPanel = $(".pictures");
     this._selectionPanel = $(".selection");
     this._planStylePanel = $(".plan-style");
     this._coloursPanel = $(".colours");
     this._elementSizePanel = $(".element-size");
     this._visibilityPanel = $(".visibility");
-    this._moveFloorPanel = $(".move-floor");
+    this._movePicturePanel = $(".move-picture");
     this._tips = $(".tips");
     this._resultsEl = $(".results");
     this._domainsEl = $(".domains");
@@ -2090,12 +2229,16 @@ class PictureElementsPlusEditor extends HTMLElement {
       const button = ev.target.closest(".result");
       if (button) this._addEntity(button.dataset.entity);
     });
+    this._resultsEl.addEventListener("dragstart", (ev) => {
+      const button = ev.target.closest?.(".result");
+      if (button) startDrag(ev, { entity: button.dataset.entity });
+    });
 
-    // Floors
-    $(".floor-name").addEventListener("change", (ev) => this._renameFloor(ev.target.value));
-    $(".floor-earlier").addEventListener("click", () => this._moveFloor(-1));
-    $(".floor-later").addEventListener("click", () => this._moveFloor(1));
-    $(".floor-remove").addEventListener("click", () => this._removeFloor());
+    // Pictures
+    $(".picture-name").addEventListener("change", (ev) => this._renamePicture(ev.target.value));
+    $(".picture-earlier").addEventListener("click", () => this._movePicture(-1));
+    $(".picture-later").addEventListener("click", () => this._movePicture(1));
+    $(".picture-remove").addEventListener("click", () => this._removePicture());
 
     // Selection
     $(".selection-clear").addEventListener("click", () => this._setSelection([]));
@@ -2106,7 +2249,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._renderSnap();
     this._renderAlignChips();
     this._renderOptionForms();
-    this._renderFloors();
+    this._renderPictures();
     this._loadInnerEditor();
   }
 
@@ -2123,8 +2266,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     // element. Watch for that to hide the old add button and to switch our
     // panels around.
     const watch = () => {
-      this._hideBuiltInAddButton();
-      this._openCardOptionsIfNeeded();
+      this._tidyBuiltInEditor();
       this._updatePanels();
     };
     await inner.updateComplete;
@@ -2132,32 +2274,27 @@ class PictureElementsPlusEditor extends HTMLElement {
     watch();
   }
 
-  _hideBuiltInAddButton() {
+  // Our own panels replace two parts of HA's editor: the "Add new element"
+  // dropdown, and the "Card options" form (the Picture panel does that
+  // job). If HA changes its markup they simply show up again.
+  _tidyBuiltInEditor() {
+    this._addStyles(this._inner?.shadowRoot, HIDE_CARD_OPTIONS);
     const rowEditor = this._inner?.shadowRoot?.querySelector("hui-picture-elements-card-row-editor");
-    const shadow = rowEditor?.shadowRoot;
-    if (!shadow || shadow.__pepHidden) return;
+    this._addStyles(rowEditor?.shadowRoot, HIDE_ADD_BUTTON);
+  }
+
+  _addStyles(shadow, css) {
+    if (!shadow) return;
+    shadow.__pepStyles = shadow.__pepStyles || new Set();
+    if (shadow.__pepStyles.has(css)) return;
     try {
       const sheet = new CSSStyleSheet();
-      sheet.replaceSync(HIDE_ADD_BUTTON);
+      sheet.replaceSync(css);
       shadow.adoptedStyleSheets = [...shadow.adoptedStyleSheets, sheet];
-      shadow.__pepHidden = true;
+      shadow.__pepStyles.add(css);
     } catch (err) {
       // Older browser without constructable stylesheets. Leave it be.
     }
-  }
-
-  // Until a floor plan is chosen, open "Card options" so the image picker is
-  // the first thing you see. Once per floor, so it doesn't fight you.
-  _openCardOptionsIfNeeded() {
-    if (!this._config || this._openedOptionsFor === this._floorIndex) return;
-    const view = floorView(this._config, this._floorIndex);
-    if (!isPlaceholder(view.image) || view.camera_image || view.image_entity || view.state_image) return;
-    const form = this._inner?.shadowRoot?.querySelector("ha-form");
-    const expandable = form?.shadowRoot?.querySelector("ha-form-expandable");
-    const panel = expandable?.shadowRoot?.querySelector("ha-expansion-panel");
-    if (!panel) return;
-    panel.expanded = true;
-    this._openedOptionsFor = this._floorIndex;
   }
 
   get _subEditor() {
@@ -2177,14 +2314,14 @@ class PictureElementsPlusEditor extends HTMLElement {
   _updatePanels() {
     if (!this._picker) return;
     const editingOne = this._editingOne;
-    for (const panel of [this._picker, this._floorsPanel, this._planStylePanel, this._coloursPanel]) {
+    for (const panel of [this._picker, this._picturesPanel, this._planStylePanel, this._coloursPanel]) {
       panel.hidden = editingOne;
     }
     this._tips.hidden = !this._bridge;
     this._renderSelection();
 
     const index = editingOne ? this._bridge?.selectedIndex : undefined;
-    const element = index !== undefined ? this._floorElements[index] : undefined;
+    const element = index !== undefined ? this._pictureElements[index] : undefined;
     const canHaveVisibility = element && element.type !== "conditional";
     this._visibilityPanel.hidden = !canHaveVisibility;
     if (canHaveVisibility) this._renderConditions(index, element);
@@ -2192,20 +2329,20 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._elementSizePanel.hidden = !element || !canScale(element);
     if (!this._elementSizePanel.hidden) this._renderScaleForm(element);
 
-    this._moveFloorPanel.hidden = !element || floorCount(this._config) < 2;
-    if (!this._moveFloorPanel.hidden) this._renderMoveFloorChips(index);
+    this._movePicturePanel.hidden = !element || pictureCount(this._config) < 2;
+    if (!this._movePicturePanel.hidden) this._renderMovePictureChips(index);
   }
 
   /* ---- config plumbing ---- */
 
-  get _floorElements() {
-    return elementsOf(this._config, this._floorIndex);
+  get _pictureElements() {
+    return elementsOf(this._config, this._pictureIndex);
   }
 
-  // What HA's editor gets: the current floor, without our own options on
+  // What HA's editor gets: the current picture, without our own options on
   // the card or its elements.
   _toInner(config) {
-    const inner = floorView(config, this._floorIndex);
+    const inner = pictureView(config, this._pictureIndex);
     if (inner.image === SAMPLE_IMAGE) inner.image = SAMPLE_PLAN;
     inner.elements = inner.elements.map((element) => {
       if (!OWN_ELEMENT_OPTIONS.some((key) => key in element)) return element;
@@ -2226,7 +2363,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     return inner;
   }
 
-  // And back again: put our options back on, and the floor back in its place.
+  // And back again: put our options back on, and the picture back in its place.
   _fromInner(inner) {
     const previous = this._lastInnerElements || [];
     const selected = this._bridge?.selectedIndex;
@@ -2246,15 +2383,15 @@ class PictureElementsPlusEditor extends HTMLElement {
       if (this._config?.[key] !== undefined) config[key] = this._config[key];
     }
 
-    const floors = floorsOf(this._config);
-    if (floors) {
-      // Floor settings go back on the floor; the rest stays on the card.
-      const floor = { name: floors[this._floorIndex].name };
-      for (const key of FLOOR_KEYS) {
-        if (key in config) floor[key] = config[key];
+    const pictures = picturesOf(this._config);
+    if (pictures) {
+      // Picture settings go back on the picture; the rest stays on the card.
+      const picture = { name: pictures[this._pictureIndex].name };
+      for (const key of PICTURE_KEYS) {
+        if (key in config) picture[key] = config[key];
         delete config[key];
       }
-      config.floors = floors.map((f, i) => (i === this._floorIndex ? floor : f));
+      config.pictures = pictures.map((f, i) => (i === this._pictureIndex ? picture : f));
     }
     return config;
   }
@@ -2274,9 +2411,15 @@ class PictureElementsPlusEditor extends HTMLElement {
   _emitConfig(config) {
     this._remember(config);
     this._config = config;
-    this._inner?.setConfig(this._toInner(config));
+    try {
+      this._inner?.setConfig(this._toInner(config));
+    } catch (err) {
+      // HA's editor refuses some YAML-only settings. The change still goes
+      // out, and HA shows the code editor for it.
+      console.warn("picture-elements-plus:", err.message);
+    }
     fireEvent(this, "config-changed", { config });
-    this._renderFloors();
+    this._renderPictures();
     this._renderResults();
   }
 
@@ -2306,18 +2449,18 @@ class PictureElementsPlusEditor extends HTMLElement {
     const restored = { ...config };
     if (this._bridgeKey) restored[this._bridgeKey] = this._bridge;
     this._config = restored;
-    this._floorIndex = clamp(this._floorIndex, 0, floorCount(restored) - 1);
-    if (this._link) this._link.floor = this._floorIndex;
+    this._pictureIndex = clamp(this._pictureIndex, 0, pictureCount(restored) - 1);
+    if (this._link) this._link.picture = this._pictureIndex;
     // The open element may not exist any more.
-    if (this._editingOne && this._bridge?.selectedIndex >= this._floorElements.length) {
+    if (this._editingOne && this._bridge?.selectedIndex >= this._pictureElements.length) {
       this._closeElement();
     }
     this._setSelection([]);
     this._inner?.setConfig(this._toInner(restored));
     fireEvent(this, "config-changed", { config: restored });
-    this._link?.events.dispatchEvent(new CustomEvent("floor"));
+    this._link?.events.dispatchEvent(new CustomEvent("picture"));
     this._renderOptionForms();
-    this._renderFloors();
+    this._renderPictures();
     this._renderResults();
     this._updatePanels();
   }
@@ -2351,17 +2494,19 @@ class PictureElementsPlusEditor extends HTMLElement {
       const old = editorLink(this._bridge);
       this._bridge.removeEventListener("changed", this._onBridgeChanged);
       old.events.removeEventListener("selection", this._onSelection);
-      old.events.removeEventListener("floor-request", this._onFloorRequest);
+      old.events.removeEventListener("picture-request", this._onPictureRequest);
       old.events.removeEventListener("resize", this._onResize);
+      old.events.removeEventListener("drop", this._onDrop);
     }
     this._bridge = bridge;
     this._bridgeKey = key;
     const link = editorLink(bridge);
-    link.floor = this._floorIndex;
+    link.picture = this._pictureIndex;
     bridge.addEventListener("changed", this._onBridgeChanged);
     link.events.addEventListener("selection", this._onSelection);
-    link.events.addEventListener("floor-request", this._onFloorRequest);
+    link.events.addEventListener("picture-request", this._onPictureRequest);
     link.events.addEventListener("resize", this._onResize);
+    link.events.addEventListener("drop", this._onDrop);
     this._updatePanels();
 
     // HA has no hook for adjusting a move, so wrap the handlers it calls
@@ -2376,12 +2521,12 @@ class PictureElementsPlusEditor extends HTMLElement {
       const selection = this._selection();
       const group = selection.size > 1 && selection.has(index);
       const skip = group ? selection : new Set([index]);
-      const snapped = snapPosition(left, top, this._floorElements, skip, this._snap);
+      const snapped = snapPosition(left, top, this._pictureElements, skip, this._snap);
       if (group) this._moveGroup(index, snapped.left, snapped.top);
       else originalMove(index, snapped.left, snapped.top);
     };
     handlers.clickImage = (left, top) => {
-      const snapped = snapPosition(left, top, this._floorElements, new Set([bridge.selectedIndex]), this._snap);
+      const snapped = snapPosition(left, top, this._pictureElements, new Set([bridge.selectedIndex]), this._snap);
       originalClick(snapped.left, snapped.top);
     };
     // Kept for nudging, which shouldn't be pulled back onto the grid.
@@ -2390,30 +2535,30 @@ class PictureElementsPlusEditor extends HTMLElement {
 
   // Moves every picked element by however far `index` moved.
   _moveGroup(index, left, top) {
-    const elements = this._floorElements;
+    const elements = this._pictureElements;
     const start = positionOf(elements[index]);
     if (!start) return;
     this._shiftElements(this._selection(), left - start.left, top - start.top);
   }
 
   _shiftElements(indexes, dx, dy) {
-    const elements = [...this._floorElements];
+    const elements = [...this._pictureElements];
     for (const i of indexes) {
       const from = positionOf(elements[i]);
       if (from) elements[i] = withPosition(elements[i], from.left + dx, from.top + dy);
     }
-    this._emitConfig(withElements(this._config, this._floorIndex, elements));
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
   }
 
   // The preview's corner handle resized a room glow.
   _resizeElement({ index, width, height }) {
-    const elements = [...this._floorElements];
+    const elements = [...this._pictureElements];
     if (!elements[index]) return;
     elements[index] = {
       ...elements[index],
       style: { ...elements[index].style, width: `${width}%`, height: `${height}%` },
     };
-    this._emitConfig(withElements(this._config, this._floorIndex, elements));
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
     // HA's form for the open element keeps its own copy of the element.
     // Moving it to where it already is makes HA pick up the new size.
     const position = positionOf(elements[index]);
@@ -2463,7 +2608,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     }
 
     const index = bridge.selectedIndex;
-    const position = index !== undefined ? positionOf(this._floorElements[index]) : undefined;
+    const position = index !== undefined ? positionOf(this._pictureElements[index]) : undefined;
     if (!position) return;
     ev.preventDefault();
     this._moveWithoutSnap(
@@ -2473,138 +2618,266 @@ class PictureElementsPlusEditor extends HTMLElement {
     );
   }
 
-  /* ---- floors ---- */
+  /* ---- pictures ---- */
 
-  _setFloor(index) {
-    const count = floorCount(this._config);
-    if (index < 0 || index >= count || index === this._floorIndex) return;
-    this._floorIndex = index;
-    if (this._link) this._link.floor = index;
+  _setPicture(index) {
+    const count = pictureCount(this._config);
+    if (index < 0 || index >= count || index === this._pictureIndex) return;
+    this._pictureIndex = index;
+    if (this._link) this._link.picture = index;
     this._setSelection([]);
     this._inner?.setConfig(this._toInner(this._config));
-    this._link?.events.dispatchEvent(new CustomEvent("floor"));
-    this._renderFloors();
+    this._link?.events.dispatchEvent(new CustomEvent("picture"));
+    this._renderPictures();
     this._renderResults();
-    this._openCardOptionsIfNeeded();
   }
 
-  _renderFloors() {
-    if (!this._floorsPanel || !this._config) return;
-    const floors = floorsOf(this._config);
+  _renderPictures() {
+    if (!this._picturesPanel || !this._config) return;
+    const pictures = picturesOf(this._config);
     const $ = (selector) => this.shadowRoot.querySelector(selector);
-    const chips = $(".floor-chips");
-    const names = floors ? floors.map((floor, i) => floor.name || `Floor ${i + 1}`) : [];
+
+    this._titleForm = this._optionForm(".title-form", TITLE_SCHEMA, ["title"]);
+
+    const chips = $(".picture-chips");
+    const names = pictures ? pictures.map((picture, i) => picture.name || `Image ${i + 1}`) : [];
     chips.innerHTML =
       names
-        .map((name, i) => `<button class="chip" data-floor="${i}" aria-pressed="${i === this._floorIndex}">${escapeHtml(name)}</button>`)
+        .map((name, i) => `<button class="chip" data-picture="${i}" aria-pressed="${i === this._pictureIndex}">${escapeHtml(name)}</button>`)
         .join("") +
-      `<button class="chip add-floor"><ha-icon icon="mdi:plus"></ha-icon>Add floor</button>`;
-    for (const button of chips.querySelectorAll("[data-floor]")) {
-      button.addEventListener("click", () => this._setFloor(Number(button.dataset.floor)));
+      `<button class="chip add-picture"><ha-icon icon="mdi:plus"></ha-icon>${pictures ? "Add image" : "Add another image"}</button>`;
+    for (const button of chips.querySelectorAll("[data-picture]")) {
+      button.addEventListener("click", () => this._setPicture(Number(button.dataset.picture)));
     }
-    chips.querySelector(".add-floor").addEventListener("click", () => this._addFloor());
+    chips.querySelector(".add-picture").addEventListener("click", () => this._addPicture());
 
-    $(".floor-edit").hidden = !floors;
-    if (floors) {
-      const input = $(".floor-name");
-      if (this.shadowRoot.activeElement !== input) input.value = floors[this._floorIndex]?.name || "";
-      $(".floor-earlier").disabled = this._floorIndex === 0;
-      $(".floor-later").disabled = this._floorIndex === floors.length - 1;
+    $(".picture-edit").hidden = !pictures;
+    if (pictures) {
+      const input = $(".picture-name");
+      if (this.shadowRoot.activeElement !== input) input.value = pictures[this._pictureIndex]?.name || "";
+      $(".picture-earlier").disabled = this._pictureIndex === 0;
+      $(".picture-later").disabled = this._pictureIndex === pictures.length - 1;
     }
-    $(".floor-hint").textContent = floors
-      ? "Each floor has its own image (under Card options) and its own elements. The card shows tabs to switch between them."
-      : "Add another floor to show several plans in one card, with tabs to switch between them.";
+    $(".picture-hint").textContent = pictures
+      ? "Each image has its own elements. The card shows the names as tabs to switch between them."
+      : "Add another image to show several in one card, with tabs to switch between them: floors, rooms, the garden, anything.";
+
+    this._renderSource();
   }
 
-  _addFloor() {
+  /* ---- what the picture shows: an image or a camera ---- */
+
+  get _sourceMode() {
+    const view = pictureView(this._config, this._pictureIndex);
+    if (view.camera_image) return "camera";
+    return this._cameraChosenFor === this._pictureIndex ? "camera" : "image";
+  }
+
+  _renderSource() {
+    const $ = (selector) => this.shadowRoot.querySelector(selector);
+    const mode = this._sourceMode;
+    this._renderChoiceChips(
+      ".source",
+      [
+        { mode: "image", label: "Image", icon: "mdi:image-outline" },
+        { mode: "camera", label: "Camera", icon: "mdi:cctv" },
+      ],
+      (item) => item.mode === mode,
+      (item) => this._setSourceMode(item.mode)
+    );
+
+    const view = pictureView(this._config, this._pictureIndex);
+    const container = $(".source-form");
+    if (!this._sourceForm) {
+      this._sourceForm = document.createElement("ha-form");
+      this._sourceForm.computeLabel = (field) => SOURCE_LABELS[field.name];
+      this._sourceForm.addEventListener("value-changed", (ev) => {
+        ev.stopPropagation();
+        this._sourceChanged(ev.detail.value);
+      });
+      container.append(this._sourceForm);
+    }
+    this._sourceForm.hass = this._hass;
+    this._sourceForm.schema = mode === "camera" ? CAMERA_SCHEMA : IMAGE_SCHEMA;
+    // HA's image picker works with media objects; plain URLs are wrapped.
+    const asMedia = (image) => {
+      if (!image) return undefined;
+      if (image === SAMPLE_IMAGE) return { media_content_id: SAMPLE_PLAN };
+      return typeof image === "string" ? { media_content_id: image } : image;
+    };
+    this._sourceForm.data = mode === "camera"
+      ? { camera_image: view.camera_image, camera_view: view.camera_view || "auto" }
+      : { image: asMedia(view.image), dark_mode_image: asMedia(view.dark_mode_image) };
+
+    // Settings this panel doesn't show still work, so say they're there.
+    const hidden = ["state_image", "image_entity", "state_filter", "dark_mode_filter", "theme"]
+      .filter((key) => view[key] !== undefined);
+    const hints = [];
+    if (mode === "image" && isPlaceholder(view.image)) {
+      hints.push("This is the sample plan. Upload your own picture, or pick one from your media, above.");
+    }
+    if (mode === "camera" && !view.camera_image) {
+      hints.push("Pick a camera. The image stays on until you do.");
+    }
+    if (hidden.length) {
+      hints.push(`Also set in the code editor: ${hidden.join(", ")}.`);
+    }
+    $(".source-hint").textContent = hints.join(" ");
+  }
+
+  _setSourceMode(mode) {
+    if (mode === this._sourceMode) return;
+    if (mode === "camera") {
+      // Keep the image until a camera is picked, or the card has nothing to show.
+      this._cameraChosenFor = this._pictureIndex;
+      this._renderSource();
+      return;
+    }
+    this._cameraChosenFor = undefined;
+    const view = pictureView(this._config, this._pictureIndex);
+    this._setPictureSettings({
+      camera_image: undefined,
+      camera_view: undefined,
+      image: view.image ||
+        (this._imageBeforeCamera?.index === this._pictureIndex && this._imageBeforeCamera.image) ||
+        SAMPLE_IMAGE,
+    });
+  }
+
+  _sourceChanged(value) {
+    if (this._sourceMode === "camera") {
+      if (!value.camera_image) return;
+      // Remembered in case you switch back to an image.
+      const view = pictureView(this._config, this._pictureIndex);
+      if (view.image) this._imageBeforeCamera = { index: this._pictureIndex, image: view.image };
+      this._setPictureSettings({
+        camera_image: value.camera_image,
+        camera_view: value.camera_view && value.camera_view !== "auto" ? value.camera_view : undefined,
+        image: undefined,
+        dark_mode_image: undefined,
+      });
+      return;
+    }
+    const fromMedia = (media) => {
+      const id = typeof media === "object" ? media?.media_content_id : media;
+      if (!id) return undefined;
+      return id === SAMPLE_PLAN ? SAMPLE_IMAGE : media;
+    };
+    this._setPictureSettings({
+      image: fromMedia(value.image) || SAMPLE_IMAGE,
+      dark_mode_image: fromMedia(value.dark_mode_image),
+    });
+  }
+
+  // Changes settings of the image being edited: on the card itself when
+  // there's only one, otherwise on its entry in `pictures`.
+  _setPictureSettings(changes) {
+    const apply = (target) => {
+      const next = { ...target };
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === undefined) delete next[key];
+        else next[key] = value;
+      }
+      return next;
+    };
+    const pictures = picturesOf(this._config);
+    const config = pictures
+      ? { ...this._config, pictures: pictures.map((p, i) => (i === this._pictureIndex ? apply(p) : p)) }
+      : apply(this._config);
+    this._emitConfig(config);
+  }
+
+  _addPicture() {
     let config = { ...this._config };
-    let floors = floorsOf(config);
-    if (!floors) {
-      // The card's own image and elements become the first floor.
-      const first = { name: "Ground floor" };
-      for (const key of FLOOR_KEYS) {
+    let pictures = picturesOf(config);
+    if (!pictures) {
+      // The card's own image and elements become the first picture.
+      const first = { name: "Image 1" };
+      for (const key of PICTURE_KEYS) {
         if (key in config) first[key] = config[key];
         delete config[key];
       }
-      floors = [first];
+      pictures = [first];
     }
-    const defaultNames = ["Ground floor", "First floor", "Second floor", "Third floor"];
-    const name = defaultNames[floors.length] || `Floor ${floors.length + 1}`;
-    config.floors = [...floors, { name, image: SAMPLE_IMAGE, elements: [] }];
+    const name = `Image ${pictures.length + 1}`;
+    config.pictures = [...pictures, { name, image: SAMPLE_IMAGE, elements: [] }];
     this._emitConfig(config);
-    this._setFloor(config.floors.length - 1);
+    this._setPicture(config.pictures.length - 1);
+    // Straight into naming it.
+    const input = this.shadowRoot.querySelector(".picture-name");
+    input.focus();
+    input.select();
   }
 
-  _renameFloor(name) {
-    const floors = floorsOf(this._config);
-    if (!floors) return;
-    const trimmed = name.trim() || `Floor ${this._floorIndex + 1}`;
+  _renamePicture(name) {
+    const pictures = picturesOf(this._config);
+    if (!pictures) return;
+    const trimmed = name.trim() || `Image ${this._pictureIndex + 1}`;
     this._emitConfig({
       ...this._config,
-      floors: floors.map((floor, i) => (i === this._floorIndex ? { ...floor, name: trimmed } : floor)),
+      pictures: pictures.map((picture, i) => (i === this._pictureIndex ? { ...picture, name: trimmed } : picture)),
     });
-    this._link?.events.dispatchEvent(new CustomEvent("floor"));
+    this._link?.events.dispatchEvent(new CustomEvent("picture"));
   }
 
-  _moveFloor(direction) {
-    const floors = [...(floorsOf(this._config) || [])];
-    const from = this._floorIndex;
+  _movePicture(direction) {
+    const pictures = [...(picturesOf(this._config) || [])];
+    const from = this._pictureIndex;
     const to = from + direction;
-    if (to < 0 || to >= floors.length) return;
-    [floors[from], floors[to]] = [floors[to], floors[from]];
-    this._floorIndex = to;
-    if (this._link) this._link.floor = to;
-    this._emitConfig({ ...this._config, floors });
-    this._link?.events.dispatchEvent(new CustomEvent("floor"));
+    if (to < 0 || to >= pictures.length) return;
+    [pictures[from], pictures[to]] = [pictures[to], pictures[from]];
+    this._pictureIndex = to;
+    if (this._link) this._link.picture = to;
+    this._emitConfig({ ...this._config, pictures });
+    this._link?.events.dispatchEvent(new CustomEvent("picture"));
   }
 
-  _removeFloor() {
-    const floors = floorsOf(this._config);
-    if (!floors) return;
-    const remaining = floors.filter((_, i) => i !== this._floorIndex);
+  _removePicture() {
+    const pictures = picturesOf(this._config);
+    if (!pictures) return;
+    const remaining = pictures.filter((_, i) => i !== this._pictureIndex);
     let config = { ...this._config };
     if (remaining.length === 1) {
-      // Back to a plain single-floor card.
-      delete config.floors;
-      const { name, ...floor } = remaining[0];
-      Object.assign(config, floor);
+      // Back to a plain single-picture card.
+      delete config.pictures;
+      const { name, ...picture } = remaining[0];
+      Object.assign(config, picture);
     } else {
-      config.floors = remaining;
+      config.pictures = remaining;
     }
-    this._floorIndex = Math.max(0, this._floorIndex - 1);
-    if (this._link) this._link.floor = this._floorIndex;
+    this._pictureIndex = Math.max(0, this._pictureIndex - 1);
+    if (this._link) this._link.picture = this._pictureIndex;
     this._setSelection([]);
     this._emitConfig(config);
-    this._link?.events.dispatchEvent(new CustomEvent("floor"));
-    this._openCardOptionsIfNeeded();
+    this._link?.events.dispatchEvent(new CustomEvent("picture"));
   }
 
-  _moveToFloor(indexes, target) {
-    const floors = floorsOf(this._config);
-    if (!floors || target === this._floorIndex) return;
+  _moveToPicture(indexes, target) {
+    const pictures = picturesOf(this._config);
+    if (!pictures || target === this._pictureIndex) return;
     const moving = new Set(indexes);
-    const elements = this._floorElements;
+    const elements = this._pictureElements;
     const moved = elements.filter((_, i) => moving.has(i));
     const staying = elements.filter((_, i) => !moving.has(i));
     this._closeElement();
     this._setSelection([]);
     this._emitConfig({
       ...this._config,
-      floors: floors.map((floor, i) => {
-        if (i === this._floorIndex) return { ...floor, elements: staying };
-        if (i === target) return { ...floor, elements: [...(floor.elements || []), ...moved] };
-        return floor;
+      pictures: pictures.map((picture, i) => {
+        if (i === this._pictureIndex) return { ...picture, elements: staying };
+        if (i === target) return { ...picture, elements: [...(picture.elements || []), ...moved] };
+        return picture;
       }),
     });
   }
 
-  _renderMoveFloorChips(index) {
-    const floors = floorsOf(this._config) || [];
+  _renderMovePictureChips(index) {
+    const pictures = picturesOf(this._config) || [];
     this._renderChoiceChips(
-      ".move-floor-chips",
-      floors.map((floor, i) => ({ i, label: escapeHtml(floor.name || `Floor ${i + 1}`) })).filter((f) => f.i !== this._floorIndex),
+      ".move-picture-chips",
+      pictures.map((picture, i) => ({ i, label: escapeHtml(picture.name || `Image ${i + 1}`) })).filter((f) => f.i !== this._pictureIndex),
       () => false,
-      (item) => this._moveToFloor([index], item.i)
+      (item) => this._moveToPicture([index], item.i)
     );
   }
 
@@ -2624,7 +2897,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   _renderSelection() {
     const panel = this._selectionPanel;
     if (!panel || !this._config) return;
-    const elements = this._floorElements;
+    const elements = this._pictureElements;
     const selection = this._selection();
     // Drop anything that's gone, e.g. after an element was deleted.
     for (const index of [...selection]) {
@@ -2650,14 +2923,14 @@ class PictureElementsPlusEditor extends HTMLElement {
       (item) => this._setScale([...selection], item.size)
     );
 
-    const floors = floorsOf(this._config);
-    this.shadowRoot.querySelector(".selection-floor-row").hidden = !floors;
-    if (floors) {
+    const pictures = picturesOf(this._config);
+    this.shadowRoot.querySelector(".selection-picture-row").hidden = !pictures;
+    if (pictures) {
       this._renderChoiceChips(
-        ".selection-floor",
-        floors.map((floor, i) => ({ i, label: escapeHtml(floor.name || `Floor ${i + 1}`) })).filter((f) => f.i !== this._floorIndex),
+        ".selection-picture",
+        pictures.map((picture, i) => ({ i, label: escapeHtml(picture.name || `Image ${i + 1}`) })).filter((f) => f.i !== this._pictureIndex),
         () => false,
-        (item) => this._moveToFloor([...selection], item.i)
+        (item) => this._moveToPicture([...selection], item.i)
       );
     }
   }
@@ -2665,7 +2938,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   // Lines up or spreads out the picked elements. Works on their positions,
   // which are their centres, so "left" lines up the left-most centre.
   _align(action) {
-    const elements = [...this._floorElements];
+    const elements = [...this._pictureElements];
     const picked = [...this._selection()]
       .map((index) => ({ index, position: positionOf(elements[index]) }))
       .filter((item) => item.position);
@@ -2697,25 +2970,25 @@ class PictureElementsPlusEditor extends HTMLElement {
     for (const { index, position } of picked) {
       elements[index] = withPosition(elements[index], position.left, position.top);
     }
-    this._emitConfig(withElements(this._config, this._floorIndex, elements));
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
   }
 
   _setScale(indexes, size) {
-    const elements = [...this._floorElements];
+    const elements = [...this._pictureElements];
     for (const index of indexes) {
       if (!canScale(elements[index])) continue;
       const { scale, ...rest } = elements[index];
       elements[index] = size === 100 ? rest : { ...rest, scale: size };
     }
-    this._emitConfig(withElements(this._config, this._floorIndex, elements));
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
     this._renderSelection();
   }
 
   _removeSelected() {
     const selection = this._selection();
-    const elements = this._floorElements.filter((_, i) => !selection.has(i));
+    const elements = this._pictureElements.filter((_, i) => !selection.has(i));
     this._setSelection([]);
-    this._emitConfig(withElements(this._config, this._floorIndex, elements));
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
   }
 
   /* ---- option forms ---- */
@@ -2799,10 +3072,10 @@ class PictureElementsPlusEditor extends HTMLElement {
   }
 
   _setVisibility(index, conditions) {
-    const elements = [...this._floorElements];
+    const elements = [...this._pictureElements];
     const { visibility, ...rest } = elements[index];
     elements[index] = conditions?.length ? { ...rest, visibility: conditions } : rest;
-    this._emitConfig(withElements(this._config, this._floorIndex, elements));
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
   }
 
   /* ---- picker ---- */
@@ -2927,6 +3200,13 @@ class PictureElementsPlusEditor extends HTMLElement {
 
   _renderOthers() {
     this._renderChoiceChips(".others", OTHER_ELEMENTS, () => false, (item) => this._addOther(item.type));
+    this.shadowRoot.querySelectorAll(".others .chip").forEach((chip, i) => {
+      const { type } = OTHER_ELEMENTS[i];
+      // Conditional elements aren't placed anywhere, so there's no point dragging them.
+      if (type === "conditional") return;
+      chip.draggable = true;
+      chip.addEventListener("dragstart", (ev) => startDrag(ev, { other: type }));
+    });
   }
 
   _renderSnap() {
@@ -2938,7 +3218,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     });
   }
 
-  // Entities on any floor count as "on the plan".
+  // Entities on any picture count as "on the plan".
   _entitiesOnPlan() {
     const ids = new Set();
     const walk = (elements) => {
@@ -2990,7 +3270,8 @@ class PictureElementsPlusEditor extends HTMLElement {
     let html = shown
       .map(
         (item) => `
-        <button class="result" data-entity="${escapeHtml(item.entityId)}" title="Add ${escapeHtml(item.name)}">
+        <button class="result" draggable="true" data-entity="${escapeHtml(item.entityId)}"
+          title="Click to add ${escapeHtml(item.name)}, or drag it onto the plan">
           <span class="icon"><ha-state-icon></ha-state-icon></span>
           <span class="text">
             <div class="name">${escapeHtml(item.name)}
@@ -2999,6 +3280,7 @@ class PictureElementsPlusEditor extends HTMLElement {
             <div class="id">${escapeHtml(item.entityId)}</div>
           </span>
           <span class="area">${escapeHtml(item.areaName)}</span>
+          <ha-icon class="add" icon="mdi:plus-circle-outline"></ha-icon>
         </button>`
       )
       .join("");
@@ -3027,9 +3309,9 @@ class PictureElementsPlusEditor extends HTMLElement {
 
   /* ---- filling a room ---- */
 
-  // The room glow for the chosen room on this floor, if there is one.
+  // The room glow for the chosen room on this picture, if there is one.
   _roomGlowFor(areaId) {
-    return this._floorElements.find(
+    return this._pictureElements.find(
       (element) => element.type === `custom:${ROOM_TYPE}` && element.area === areaId && positionOf(element)
     );
   }
@@ -3081,8 +3363,8 @@ class PictureElementsPlusEditor extends HTMLElement {
       element.style = { left: `${positions[i].left}%`, top: `${positions[i].top}%` };
       return element;
     });
-    const before = this._floorElements;
-    this._emitConfig(withElements(this._config, this._floorIndex, [...before, ...added]));
+    const before = this._pictureElements;
+    this._emitConfig(withElements(this._config, this._pictureIndex, [...before, ...added]));
     this._setSelection(added.map((_, i) => before.length + i));
   }
 
@@ -3092,7 +3374,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   // already there, in which case step down and to the right.
   _freeSpot() {
     const taken = new Set(
-      this._floorElements.map((el) => `${parsePercent(el.style?.left)},${parsePercent(el.style?.top)}`)
+      this._pictureElements.map((el) => `${parsePercent(el.style?.left)},${parsePercent(el.style?.top)}`)
     );
     let left = 50;
     let top = 50;
@@ -3121,14 +3403,21 @@ class PictureElementsPlusEditor extends HTMLElement {
     return element;
   }
 
-  _addEntity(entityId) {
+  // Entities go straight onto the plan without opening their editor, so
+  // you can add several in a row. The new one is picked, so it shows up
+  // with a box round it and the arrow keys move it.
+  _addEntity(entityId, position) {
     if (!entityId || !this._config) return;
-    this._addElement(this._elementForEntity(entityId));
+    const element = this._elementForEntity(entityId);
+    if (position) element.style = { left: `${position.left}%`, top: `${position.top}%` };
+    this._addElement(element, false);
   }
 
-  _addOther(type) {
-    const style = this._freeSpot();
-    const background = floorView(this._config, this._floorIndex).image;
+  // Everything else needs setting up (text to type, a room to pick), so its
+  // editor opens.
+  _addOther(type, position) {
+    const style = position ? { left: `${position.left}%`, top: `${position.top}%` } : this._freeSpot();
+    const background = pictureView(this._config, this._pictureIndex).image;
     const backgroundUrl = typeof background === "object" ? background.media_content_id : background;
     const areaId = this._area && this._area !== "__none__" ? this._area : undefined;
     const room = PictureElementsPlusRoom.getStubConfig();
@@ -3146,18 +3435,23 @@ class PictureElementsPlusEditor extends HTMLElement {
       // Conditional elements only wrap others and aren't positioned themselves.
       conditional: { type, conditions: [], elements: [] },
     };
-    this._addElement(elements[type]);
+    this._addElement(elements[type], true);
   }
 
-  _addElement(element) {
-    const elements = [...this._floorElements, element];
+  _addElement(element, open) {
+    // Adding while one element is open would leave its form showing.
+    if (this._editingOne) this._closeElement();
+    const elements = [...this._pictureElements, element];
     // Spread the old config so the bridge symbol comes along.
-    this._emitConfig(withElements(this._config, this._floorIndex, elements));
-    // Open the new element straight away so it can be dragged into place.
-    this._bridge?.handlers.selectElement(elements.length - 1);
-    const input = this.shadowRoot.querySelector(".search input");
-    input.value = "";
-    this._search = "";
+    this._emitConfig(withElements(this._config, this._pictureIndex, elements));
+    if (open) this._bridge?.handlers.selectElement(elements.length - 1);
+    else this._setSelection([elements.length - 1]);
+  }
+
+  // Something from the list was dropped on the preview.
+  _dropped({ data, left, top }) {
+    if (data.entity) this._addEntity(data.entity, { left, top });
+    else if (data.other) this._addOther(data.other, { left, top });
   }
 }
 
@@ -3184,7 +3478,7 @@ window.customCards = window.customCards || [];
 window.customCards.push({
   type: CARD_TYPE,
   name: "Picture Elements Plus",
-  description: "A floor plan card with an entity picker, drag and snap, room glows and several floors in one card.",
+  description: "A floor plan card with an entity picker, drag and snap, room glows and several images in one card.",
   preview: true,
   documentationURL: "https://github.com/MithUK1/picture-elements-plus",
 });

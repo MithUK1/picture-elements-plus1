@@ -238,6 +238,12 @@ Drag any picked element and the rest come with it. The arrow keys move them
 all too. Press **Escape** or **Clear** to let go, or click something that
 isn't picked.
 
+### Deleting
+
+With one element open, the bin next to the **{}** button at the top of its
+editor deletes it and takes you back to the list. To delete several at once,
+pick them and use **Remove from plan**.
+
 ### Undo
 
 **Ctrl+Z** undoes the last change made in the editor (moves, adding,

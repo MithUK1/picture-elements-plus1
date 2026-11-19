@@ -246,8 +246,40 @@ function cssColor(color) {
   return THEME_COLORS.has(color) ? `var(--${color}-color)` : color;
 }
 
+// Images are either a URL or, from HA's picker, a media object.
+function imageId(image) {
+  return typeof image === "object" ? image?.media_content_id : image;
+}
+
 function isPlaceholder(image) {
-  return !image || image === SAMPLE_IMAGE || image === SAMPLE_PLAN;
+  const id = imageId(image);
+  return !id || id === SAMPLE_IMAGE || id === SAMPLE_PLAN;
+}
+
+// Version 0.4 could save the sample plan as a long media object, and an
+// upload meant for the picture could end up as the dark mode image. Put
+// both right: the sample is stored by name, and a lone dark mode image on
+// top of the sample becomes the picture.
+function tidyImage(settings) {
+  if (!settings || settings.image === undefined || !isPlaceholder(settings.image)) return settings;
+  const tidy = { ...settings, image: SAMPLE_IMAGE };
+  if (tidy.dark_mode_image && !isPlaceholder(tidy.dark_mode_image)) {
+    tidy.image = tidy.dark_mode_image;
+    delete tidy.dark_mode_image;
+  }
+  return tidy;
+}
+
+function tidyImages(config) {
+  let tidy = tidyImage(config);
+  const pictures = picturesOf(config);
+  if (pictures) {
+    const tidyPictures = pictures.map(tidyImage);
+    if (tidyPictures.some((picture, i) => picture !== pictures[i])) {
+      tidy = { ...tidy, [config.pictures ? "pictures" : "floors"]: tidyPictures };
+    }
+  }
+  return tidy;
 }
 
 // Where an element sits, if it's placed with left/top percentages.
@@ -1196,7 +1228,7 @@ class PictureElementsPlusCard extends HTMLElement {
   // What HA's card gets: the current picture, our own options removed, and
   // elements with visibility conditions wrapped in a conditional element.
   _innerConfig() {
-    const config = pictureView(this._config, this._picture);
+    const config = tidyImage(pictureView(this._config, this._picture));
     config.type = "picture-elements";
     if (config.image === SAMPLE_IMAGE) config.image = SAMPLE_PLAN;
     config.elements = config.elements.map((element) => {
@@ -1987,6 +2019,12 @@ class PictureElementsPlusEditor extends HTMLElement {
       const { floors, ...rest } = config;
       config = { ...rest, pictures: floors };
     }
+    // Saved images that need putting right go back out, so Save keeps the fix.
+    const tidy = tidyImages(config);
+    if (tidy !== config) {
+      config = tidy;
+      setTimeout(() => fireEvent(this, "config-changed", { config: tidy }));
+    }
     this._config = config;
     this._pictureIndex = clamp(this._pictureIndex, 0, pictureCount(config) - 1);
     this._captureBridge(config);
@@ -2366,7 +2404,7 @@ class PictureElementsPlusEditor extends HTMLElement {
   // What HA's editor gets: the current picture, without our own options on
   // the card or its elements.
   _toInner(config) {
-    const inner = pictureView(config, this._pictureIndex);
+    const inner = tidyImage(pictureView(config, this._pictureIndex));
     if (inner.image === SAMPLE_IMAGE) inner.image = SAMPLE_PLAN;
     inner.elements = inner.elements.map((element) => {
       if (!OWN_ELEMENT_OPTIONS.some((key) => key in element)) return element;
@@ -2402,7 +2440,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     });
 
     const config = { ...inner, elements };
-    if (config.image === SAMPLE_PLAN) config.image = SAMPLE_IMAGE;
+    if (config.image !== undefined && isPlaceholder(config.image)) config.image = SAMPLE_IMAGE;
     for (const key of OWN_OPTIONS) {
       if (this._config?.[key] !== undefined) config[key] = this._config[key];
     }
@@ -2735,7 +2773,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     // The sample plan shows as an empty picker, inviting you to upload yours,
     // rather than as a screenful of image code.
     const asMedia = (image) => {
-      if (!image || image === SAMPLE_IMAGE || image === SAMPLE_PLAN) return undefined;
+      if (isPlaceholder(image)) return undefined;
       return typeof image === "string" ? { media_content_id: image } : image;
     };
     this._sourceForm.data = mode === "camera"
@@ -2828,7 +2866,7 @@ class PictureElementsPlusEditor extends HTMLElement {
     const fromMedia = (media) => {
       const id = typeof media === "object" ? media?.media_content_id : media;
       if (!id) return undefined;
-      return id === SAMPLE_PLAN ? SAMPLE_IMAGE : media;
+      return isPlaceholder(media) ? SAMPLE_IMAGE : media;
     };
     // Clearing the picture goes back to the sample plan, so the card always
     // has something to show.

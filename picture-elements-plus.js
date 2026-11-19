@@ -34,7 +34,7 @@
  * element, the card, the card editor, the sample plan and registration.
  */
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 
 const CARD_TYPE = "picture-elements-plus";
 const TEXT_TYPE = "picture-elements-plus-text";
@@ -1677,6 +1677,20 @@ const EDITOR_STYLES = `
     font-weight: 500;
   }
   .panel-header ha-icon { color: var(--primary-color); }
+  summary.panel-header { padding-bottom: 12px; cursor: pointer; list-style: none; }
+  summary.panel-header::-webkit-details-marker { display: none; }
+  summary .summary {
+    font-weight: 400;
+    font-size: 13px;
+    color: var(--secondary-text-color);
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  summary .chevron { color: var(--secondary-text-color); transition: transform 0.2s; }
+  details[open] > summary .chevron { transform: rotate(180deg); }
+  details[open] > summary.panel-header { padding-bottom: 4px; }
+  .dark-form:empty, .dark-form[hidden] { display: none; }
   .panel-header .spacer { flex: 1; }
   .panel-body { padding: 8px 16px 12px; }
   .hint { font-size: 12px; color: var(--secondary-text-color); margin: 4px 0 0; }
@@ -1863,10 +1877,9 @@ const TITLE_SCHEMA = [{ name: "title", selector: { text: {} } }];
 
 const MEDIA_SELECTOR = { media: { accept: ["image/*"], image_upload: true, hide_content_type: true } };
 
-const IMAGE_SCHEMA = [
-  { name: "image", selector: MEDIA_SELECTOR },
-  { name: "dark_mode_image", selector: MEDIA_SELECTOR },
-];
+const IMAGE_SCHEMA = [{ name: "image", selector: MEDIA_SELECTOR }];
+
+const DARK_IMAGE_SCHEMA = [{ name: "dark_mode_image", selector: MEDIA_SELECTOR }];
 
 const CAMERA_SCHEMA = [
   { name: "camera_image", selector: { entity: { domain: "camera" } } },
@@ -1886,7 +1899,7 @@ const CAMERA_SCHEMA = [
 
 const SOURCE_LABELS = {
   image: "Image",
-  dark_mode_image: "Different image in dark mode (optional)",
+  dark_mode_image: "Image in dark mode",
   camera_image: "Camera",
   camera_view: "Show",
 };
@@ -2001,11 +2014,14 @@ class PictureElementsPlusEditor extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>${EDITOR_STYLES}</style>
 
-      <div class="panel pictures">
-        <div class="panel-header">
+      <details class="panel pictures">
+        <summary class="panel-header">
           <ha-icon icon="mdi:image-outline"></ha-icon>
           Picture
-        </div>
+          <span class="summary"></span>
+          <span class="spacer"></span>
+          <ha-icon class="chevron" icon="mdi:chevron-down"></ha-icon>
+        </summary>
         <div class="panel-body">
           <div class="title-form"></div>
           <div class="chips picture-chips"></div>
@@ -2013,17 +2029,21 @@ class PictureElementsPlusEditor extends HTMLElement {
             <input class="text-input picture-name" placeholder="Name shown on its tab" aria-label="Name shown on its tab">
             <button class="chip icon-only picture-earlier" title="Move this image earlier"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
             <button class="chip icon-only picture-later" title="Move this image later"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
-            <button class="chip danger picture-remove">Remove image</button>
+            <button class="chip icon-only danger picture-remove" title="Remove this image"><ha-icon icon="mdi:delete-outline"></ha-icon></button>
           </div>
           <div class="row">
             <span class="label">Show</span>
             <div class="chips source"></div>
           </div>
           <div class="source-form"></div>
+          <div class="chips">
+            <button class="chip dark-mode-toggle"><ha-icon icon="mdi:weather-night"></ha-icon>Different image in dark mode</button>
+          </div>
+          <div class="dark-form"></div>
           <p class="hint source-hint"></p>
           <p class="hint picture-hint"></p>
         </div>
-      </div>
+      </details>
 
       <div class="inner"></div>
 
@@ -2239,6 +2259,10 @@ class PictureElementsPlusEditor extends HTMLElement {
     $(".picture-earlier").addEventListener("click", () => this._movePicture(-1));
     $(".picture-later").addEventListener("click", () => this._movePicture(1));
     $(".picture-remove").addEventListener("click", () => this._removePicture());
+    $(".dark-mode-toggle").addEventListener("click", () => {
+      this._darkModeFor = this._pictureIndex;
+      this._renderSource();
+    });
 
     // Selection
     $(".selection-clear").addEventListener("click", () => this._setSelection([]));
@@ -2639,6 +2663,14 @@ class PictureElementsPlusEditor extends HTMLElement {
 
     this._titleForm = this._optionForm(".title-form", TITLE_SCHEMA, ["title"]);
 
+    // Closed out of the way normally; open on a new card that still has the
+    // sample plan, as picking your picture is the first job.
+    if (!this._picturesPanelSet) {
+      this._picturesPanelSet = true;
+      const view = pictureView(this._config, this._pictureIndex);
+      this._picturesPanel.open = !view.camera_image && isPlaceholder(view.image);
+    }
+
     const chips = $(".picture-chips");
     const names = pictures ? pictures.map((picture, i) => picture.name || `Image ${i + 1}`) : [];
     chips.innerHTML =
@@ -2700,21 +2732,56 @@ class PictureElementsPlusEditor extends HTMLElement {
     this._sourceForm.hass = this._hass;
     this._sourceForm.schema = mode === "camera" ? CAMERA_SCHEMA : IMAGE_SCHEMA;
     // HA's image picker works with media objects; plain URLs are wrapped.
+    // The sample plan shows as an empty picker, inviting you to upload yours,
+    // rather than as a screenful of image code.
     const asMedia = (image) => {
-      if (!image) return undefined;
-      if (image === SAMPLE_IMAGE) return { media_content_id: SAMPLE_PLAN };
+      if (!image || image === SAMPLE_IMAGE || image === SAMPLE_PLAN) return undefined;
       return typeof image === "string" ? { media_content_id: image } : image;
     };
     this._sourceForm.data = mode === "camera"
       ? { camera_image: view.camera_image, camera_view: view.camera_view || "auto" }
-      : { image: asMedia(view.image), dark_mode_image: asMedia(view.dark_mode_image) };
+      : { image: asMedia(view.image) };
+
+    // The dark mode image is tucked away until it's wanted.
+    const showDark = mode === "image" && (view.dark_mode_image || this._darkModeFor === this._pictureIndex);
+    $(".dark-mode-toggle").hidden = mode !== "image" || !!showDark;
+    const darkContainer = $(".dark-form");
+    darkContainer.hidden = !showDark;
+    if (showDark) {
+      if (!this._darkForm) {
+        this._darkForm = document.createElement("ha-form");
+        this._darkForm.schema = DARK_IMAGE_SCHEMA;
+        this._darkForm.computeLabel = (field) => SOURCE_LABELS[field.name];
+        this._darkForm.addEventListener("value-changed", (ev) => {
+          ev.stopPropagation();
+          const media = ev.detail.value.dark_mode_image;
+          const id = typeof media === "object" ? media?.media_content_id : media;
+          if (!id) this._darkModeFor = undefined;
+          this._setPictureSettings({ dark_mode_image: id ? media : undefined });
+        });
+        darkContainer.append(this._darkForm);
+      }
+      this._darkForm.hass = this._hass;
+      this._darkForm.data = { dark_mode_image: asMedia(view.dark_mode_image) };
+    }
+
+    // A one-line summary for when the panel is closed.
+    const pictures = picturesOf(this._config);
+    const imageName = (image) => {
+      if (isPlaceholder(image)) return "sample plan";
+      const id = typeof image === "object" ? image.media_content_id : image;
+      return String(id || "").split("/").pop();
+    };
+    $(".pictures .summary").textContent = pictures
+      ? pictures.map((picture, i) => picture.name || `Image ${i + 1}`).join(", ")
+      : view.camera_image || imageName(view.image);
 
     // Settings this panel doesn't show still work, so say they're there.
     const hidden = ["state_image", "image_entity", "state_filter", "dark_mode_filter", "theme"]
       .filter((key) => view[key] !== undefined);
     const hints = [];
     if (mode === "image" && isPlaceholder(view.image)) {
-      hints.push("This is the sample plan. Upload your own picture, or pick one from your media, above.");
+      hints.push("Showing the sample plan. Upload your own picture (PNG, JPG or SVG), or pick one from your media, above.");
     }
     if (mode === "camera" && !view.camera_image) {
       hints.push("Pick a camera. The image stays on until you do.");
@@ -2763,10 +2830,9 @@ class PictureElementsPlusEditor extends HTMLElement {
       if (!id) return undefined;
       return id === SAMPLE_PLAN ? SAMPLE_IMAGE : media;
     };
-    this._setPictureSettings({
-      image: fromMedia(value.image) || SAMPLE_IMAGE,
-      dark_mode_image: fromMedia(value.dark_mode_image),
-    });
+    // Clearing the picture goes back to the sample plan, so the card always
+    // has something to show.
+    this._setPictureSettings({ image: fromMedia(value.image) || SAMPLE_IMAGE });
   }
 
   // Changes settings of the image being edited: on the card itself when

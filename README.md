@@ -6,9 +6,14 @@ your floor plan and a few extras the built-in card doesn't have.
 It's the built-in card underneath, so on your dashboard it looks and behaves
 the same, and any picture elements YAML you already have keeps working.
 
-![The sample floor plan a new card starts with](https://raw.githubusercontent.com/MithUK1/picture-elements-plus/main/docs/sample-floor-plan.png)
+<p>
+  <img src="https://raw.githubusercontent.com/MithUK1/picture-elements-plus/main/docs/sample-floor-plan.png" alt="The sample floor plan a new card starts with" width="210">
+  <img src="https://raw.githubusercontent.com/MithUK1/picture-elements-plus/main/docs/coloured-floor-plan.png" alt="A coloured floor plan" width="210">
+  <img src="https://raw.githubusercontent.com/MithUK1/picture-elements-plus/main/docs/camera-example.jpg" alt="A camera view of a driveway" width="210">
+</p>
 
-*New cards start with this sample plan until you pick your own.*
+*Any picture works: the sample plan new cards start with, your own floor
+plan, or a live camera.*
 
 - [What it adds](#what-it-adds)
 - [Install](#install)
@@ -117,14 +122,24 @@ take those out when switching back.
 ### The Picture panel
 
 The **Picture** panel at the top replaces Home Assistant's "Card options".
+You won't need it often, so it's folded away: click its header to open it.
+The header shows which picture is in use. It opens by itself on a new card
+that still shows the sample plan. (A separate tab next to Config would be
+neater, but Home Assistant owns those tabs and cards can't add to them.)
+
 It has:
 
 - **Title**, shown above the plan (optional)
 - **Show: Image or Camera**. With **Image**, upload a picture or pick one
-  from your media, and optionally a different one for dark mode. With
+  from your media. PNG, JPG and SVG all work. **Different image in dark
+  mode** adds a second picture for when your dashboard is dark. With
   **Camera**, pick a camera and whether to show snapshots or a live stream.
   The image stays on the card until you've picked a camera.
 - **Add another image**, see [Several images in one card](#several-images-in-one-card)
+
+**SVG plans** stay sharp at any size. If the upload refuses your SVG, copy
+it into `/config/www/` (for example with the File editor add-on) and open
+the code editor and set `image: /local/plan.svg`.
 
 A new card starts with the sample plan above. In YAML it shows as
 `image: sample-floor-plan`. It's built into the card, so nothing gets
@@ -484,5 +499,5 @@ the built-in card doesn't know. Check the YAML against the examples above.
 ## Releasing a new version
 
 Bump `VERSION` at the top of `picture-elements-plus.js`, merge to `main`,
-then publish a GitHub release with a matching tag (for example `v0.4.0`).
+then publish a GitHub release with a matching tag (for example `v0.5.0`).
 The Marketplace checks custom repositories for new releases every 48 hours.
